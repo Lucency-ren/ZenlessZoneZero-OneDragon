@@ -37,7 +37,8 @@ class PasswordSwitchSettingCard(SettingCardBase, AdapterInitMixin):
                  dialog_title: str = "提示",
                  dialog_content: str = "密码错误，请重新输入",
                  dialog_button_text: str = "确定",
-                 reverse_mode: bool = False):
+                 reverse_mode: bool = False,
+                 require_password: bool = True):
 
         SettingCardBase.__init__(
             self,
@@ -57,6 +58,7 @@ class PasswordSwitchSettingCard(SettingCardBase, AdapterInitMixin):
         self.dialog_content = gt(dialog_content)
         self.dialog_button_text = gt(dialog_button_text)
         self.reverse_mode: bool = reverse_mode
+        self.require_password: bool = require_password
 
         # 创建按钮并设置相关属性
         self.btn = SwitchButton(parent=self, indicatorPos=IndicatorPosition.RIGHT)
@@ -95,6 +97,11 @@ class PasswordSwitchSettingCard(SettingCardBase, AdapterInitMixin):
         self.hBoxLayout.addSpacing(16)
         self.hBoxLayout.insertLayout(4, self.password_layout, 0)
 
+        # 不需要密码校验时隐藏密码输入框和明文切换按钮
+        if not self.require_password:
+            self.password.hide()
+            self.toggle_button.hide()
+
     def _set_extra_button_enabled(self, value: bool) -> None:
         if self.extra_btn is not None:
             self.extra_btn.setEnabled(value)
@@ -110,7 +117,7 @@ class PasswordSwitchSettingCard(SettingCardBase, AdapterInitMixin):
 
     def _is_password_required(self, value: bool) -> bool:
         """判断当前切换方向是否需要校验密码"""
-        return value != self.reverse_mode
+        return self.require_password and value != self.reverse_mode
 
     def _is_password_valid(self) -> bool:
         """判断当前输入的密码是否正确"""

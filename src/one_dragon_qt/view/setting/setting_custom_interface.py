@@ -81,17 +81,13 @@ class SettingCustomInterface(VerticalScrollInterface):
         self.custom_theme_color_btn = PrimaryPushButton(icon=FluentIcon.PALETTE, text=gt('自定义主题色'))
         self.custom_theme_color_btn.clicked.connect(self._on_custom_theme_color_clicked)
 
-        # 主题色模式（密码保护）
+        # 主题色模式（明文开关，不再校验密码）
         self.theme_color_mode_opt = PasswordSwitchSettingCard(
             icon=FluentIcon.PALETTE,
             title='自定义主题色',
             content='开启后可自定义主题色',
             extra_btn=self.custom_theme_color_btn,
-            password_hint='使用此功能需要密码哦~',
-            password_hash='b0cd76b7d7829362d581b739c0b295abf53182792609078bb17a9dd917ffba7c',
-            dialog_title='嘻嘻~',
-            dialog_content='密码不对哦~',
-            dialog_button_text='再试试吧',
+            require_password=False,
         )
         self.theme_color_mode_opt.value_changed.connect(self._on_theme_color_mode_changed)
 
@@ -112,11 +108,7 @@ class SettingCustomInterface(VerticalScrollInterface):
             icon=FluentIcon.PHOTO,
             title='自定义主页背景',
             extra_btn=self.banner_select_btn,
-            password_hint='使用此功能需要密码哦~',
-            password_hash='d678f04ece93caaa4d030696429101725cbf31657dd9ded4fdc3b71b3ee05c54',
-            dialog_title='嘻嘻~',
-            dialog_content='密码不对哦~',
-            dialog_button_text='再试试吧',
+            require_password=False,
         )
         self.custom_banner_opt.value_changed.connect(self.reload_banner)
         basic_group.addSettingCard(self.custom_banner_opt)

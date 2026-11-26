@@ -174,8 +174,8 @@ class ResourceManagementInterface(VerticalScrollInterface):
 
         self.auto_update_code_opt = PasswordSwitchSettingCard(
             icon=FluentIcon.SYNC, title='自动更新', content='使用exe启动时，自动检测并更新代码',
-            password_hash='69fec7ebc9c57ba044c55deb4e30aa1a6d6788f1da67b824ef96a590f526d20a',
-            reverse_mode=True
+            reverse_mode=True,
+            require_password=False,
         )
 
         self.force_update_opt = SwitchSettingCard(
@@ -189,7 +189,7 @@ class ResourceManagementInterface(VerticalScrollInterface):
             icon=FluentIcon.EDIT,
             title='自定义分支',
             extra_btn=self.custom_git_branch_lineedit,
-            password_hash='9eccbf284f363f3a5f416e879aa9bcb2c8d8445997f97740270fccc98d360a33'
+            require_password=False,
         )
 
         self.code_settings_group = SettingCardGroup(gt('代码设置'))
