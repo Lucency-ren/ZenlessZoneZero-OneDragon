@@ -31,7 +31,6 @@ from one_dragon_qt.utils.layout_utils import apply_shadow
 from one_dragon_qt.widgets.banner import Banner
 from one_dragon_qt.widgets.base_interface import BaseInterface
 from one_dragon_qt.widgets.icon_button import IconButton
-from one_dragon_qt.widgets.notice_card import NoticeCard
 from zzz_od.context.zzz_context import ZContext
 from zzz_od.gui.dialog.pre_flight_check_dialog import (
     PreFlightCheckDialog,
@@ -382,15 +381,13 @@ class HomeInterface(BaseInterface):
 
         h2_layout.setContentsMargins(32, 32, 0, 32)
 
-        # 公告卡片
-        self.notice_container = NoticeCard(self.ctx.project_config.notice_url)
-        apply_shadow(self.notice_container, blur=28, offset_x=0, offset_y=8, alpha=150)
-        h2_layout.addWidget(self.notice_container, alignment=Qt.AlignmentFlag.AlignBottom)
+        # 公告卡片已在本地移除（不显示主页公告/攻略栏目）
+        self.notice_container = None
 
         h2_layout.addStretch()
 
         # 启动游戏按钮布局
-        self.start_button = PillPushButton(FluentIcon.PLAY_SOLID, '启动一条龙')
+        self.start_button = PillPushButton(FluentIcon.PLAY_SOLID, '开始刷贝果')
         self.start_button.setObjectName("start_button")
         self.start_button.setFont(QFont("Microsoft YaHei", 16, QFont.Weight.Bold))
         self.start_button.setFixedHeight(48)
@@ -563,7 +560,7 @@ class HomeInterface(BaseInterface):
         self._ready = len(issues) == 0
         self._apply_button_icon()
         if self._ready:
-            self.start_button.setText('启动一条龙')
+            self.start_button.setText('开始刷贝果')
         else:
             self.start_button.setText(f'{len(issues)} 项待配置 ')
 

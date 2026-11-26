@@ -130,12 +130,6 @@ try:
             self.home_interface = HomeInterface(self.ctx, parent=self)
             self.add_sub_interface(self.home_interface)
 
-            # 游戏助手
-            from zzz_od.gui.view.game_assistant.game_assistant_interface import (
-                GameAssistantInterface,
-            )
-            self.add_sub_interface(GameAssistantInterface(self.ctx, parent=self))
-
             # 一条龙
             from zzz_od.gui.view.one_dragon.zzz_one_dragon_interface import (
                 ZOneDragonInterface,
@@ -148,37 +142,8 @@ try:
             )
             self.add_sub_interface(ZStandaloneAppInterface(self.ctx, parent=self))
 
-            # 画中画
-            from one_dragon_qt.widgets.pip_button import PipButton
-            self.pip_btn = PipButton(self.ctx, parent=self)
-            self.add_nav_widget(self.pip_btn)
-
-            # 点赞
-            from one_dragon_qt.view.like_interface import LikeInterface
-            self.add_sub_interface(
-                LikeInterface(self.ctx, parent=self),
-                position=NavigationItemPosition.BOTTOM,
-            )
-
-            # 开发工具
-            from zzz_od.gui.view.devtools.app_devtools_interface import (
-                AppDevtoolsInterface,
-            )
-            self.devtools_interface = AppDevtoolsInterface(self.ctx, parent=self)
-            self.add_sub_interface(
-                self.devtools_interface,
-                position=NavigationItemPosition.BOTTOM,
-            )
-
-            # 插件总入口，紧挨在资源管理上面
-            from one_dragon_qt.view.plugin.plugin_interface import (
-                PluginInterface,
-            )
-            self.plugin_interface = PluginInterface(self.ctx, parent=self)
-            self.add_sub_interface(
-                self.plugin_interface,
-                position=NavigationItemPosition.BOTTOM,
-            )
+            # 本地精简：只保留仪表盘 / 一条龙 / 应用运行 / 资源管理，
+            # 游戏助手、画中画、点赞、开发工具、插件入口都不再创建。
 
             # 资源管理
             from one_dragon_qt.view.resource_manager_interface import (
