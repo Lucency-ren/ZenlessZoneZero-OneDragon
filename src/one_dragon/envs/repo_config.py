@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -126,6 +127,8 @@ class RepoConfig(YamlConfig):
 
     AUTO_REPOSITORY_VALUE = 'auto'
     AUTO_RESOURCE_SOURCE_VALUE = 'auto'
+    CUSTOM_REPOSITORY_ID = 'custom'
+    CUSTOM_REPOSITORY_LABEL = '自定义'
     _SOURCE_EXCLUDED_KEYS = {'repositories', 'regions', 'resource_download'}
 
     def __init__(self, prefer_bundled_config: bool = False) -> None:
@@ -488,6 +491,44 @@ class RepoConfig(YamlConfig):
             if value in (repository.repository_id, repository.label, repository.url):
                 return repository
         return None
+
+    def build_custom_repository(self, raw_url: str) -> RepositoryItem | None:
+        """把手填的仓库地址转成代码源；不是 HTTPS 仓库地址时返回 None。
+
+        手填地址不套 ghproxy：用户填的是完整地址，套代理只会让私有库和自建源 404。
+        """
+        url = self.normalize_repository_url(raw_url)
+        if url is None:
+            return None
+        return RepositoryItem(
+            repository_id=self.CUSTOM_REPOSITORY_ID,
+            label=self.CUSTOM_REPOSITORY_LABEL,
+            url=url,
+            use_proxy=False,
+        )
+
+    @staticmethod
+    def normalize_repository_url(raw_url: str) -> str | None:
+        """把手填的地址补全成 HTTPS 链接，识别不了时返回 None。"""
+        url = (raw_url or '').strip()
+        if not url:
+            return None
+        if url.startswith('git@'):
+            # git@github.com:用户/仓库.git 这种 SSH 写法也接住
+            matched = re.match(r'^git@([^:]+):(.+)$', url)
+            if matched is None:
+                return None
+            url = f'https://{matched.group(1)}/{matched.group(2)}'
+        elif not url.startswith(('https://', 'http://')):
+            url = f'https://{url}'
+        else:
+            url = re.sub(r'^http://', 'https://', url)
+        parsed = urlparse(url)
+        if parsed.scheme != 'https' or not parsed.netloc:
+            return None
+        if '.' not in parsed.netloc:
+            return None
+        return url
 
     def get_region_preset(self, region_id: str) -> RegionPreset | None:
         """按地区 ID 查找地区预设。"""
