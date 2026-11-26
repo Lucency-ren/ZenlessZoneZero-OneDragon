@@ -100,7 +100,13 @@ class PcGameWindow:
         :return:
         """
         win = self.get_win()
-        return win.isActive if win is not None else False
+        if win is None:
+            return False
+        try:
+            return win.isActive
+        except Exception:
+            # pygetwindow 重建 Win32Window 时若前台窗口是开始菜单/任务视图会抛 1400
+            return False
 
     @property
     def is_win_scale(self) -> bool:

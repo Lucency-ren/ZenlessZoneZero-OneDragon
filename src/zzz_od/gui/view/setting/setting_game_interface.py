@@ -126,8 +126,8 @@ class SettingGameInterface(VerticalScrollInterface):
 
         self.overlay_opacity_opt = SpinBoxSettingCard(
             icon=FluentIcon.BRIGHTNESS, title='面板不透明度',
-            content='100 为纯黑不透明，调低后游戏画面会从面板后透出来',
-            step=5, minimum=10, maximum=100,
+            content='100 为纯黑不透明，0 只剩文字、面板完全透明',
+            step=1, minimum=0, maximum=100,
         )
         self.overlay_opacity_opt.value_changed.connect(self._on_overlay_appearance_changed)
         overlay_group.addSettingCard(self.overlay_opacity_opt)

@@ -1,0 +1,1111 @@
+diff --git a/app.py b/app.py
+index c025354..699b056 100644
+--- a/app.py
++++ b/app.py
+@@ -10,6 +10,8 @@ from one_dragon.base.operation.operation_node import operation_node
+ from one_dragon.utils.i18_utils import gt
+ from one_dragon.utils.log_utils import log
+ from zzz_od.application.zzz_application import ZApplication
++from zzz_od.operation.enter_game.enter_game import EnterGame
++from zzz_od.operation.enter_game.open_game import OpenGame
+ 
+ from . import const, screenshot, stats, usage
+ from .operation.buy_keycard import BagelBuyKeycard, buy_count_for_capacity
+@@ -22,6 +24,7 @@ from .operation.operation import (
+     BagelRecoverableFailure,
+     bagel_run_events,
+     execute_bagel_round,
++    execute_foreign_operation,
+     is_bagel_result,
+     release_flow_inputs,
+ )
+@@ -100,6 +103,8 @@ class BagelApp(ZApplication):
+         self.defeat_rounds: int = 0
+         self.consecutive_failures: int = 0
+         """全局连续失败局数；任一局成功入仓后清零。"""
++        self.limit_restarts: int = 0
++        """本次任务因连续失败达到上限而重启游戏的次数。"""
+         self.route_failures: dict[str, int] = {}
+         """各路线的连续失败局数，键为路线引用；只有该路线成功入仓才清零。"""
+         self.failure_retry_pending: bool = False
+@@ -248,6 +253,18 @@ class BagelApp(ZApplication):
+         except Exception:
+             log.error('输出贝果路线数据汇总失败', exc_info=True)
+ 
++    def _route_push_text(self) -> str | None:
++        """推送用的路线统计：每条路线打了多少局、成功率多少。只读统计，出错不影响推送。"""
++        try:
++            catalog = BagelRouteStore(self.ctx).load_catalog()
++            lines = route_stats.push_lines(self._route_recorder.load(), catalog)
++        except Exception:
++            log.error('生成贝果路线统计推送文本失败', exc_info=True)
++            return None
++        if not lines:
++            return None
++        return '\n'.join([f'路线统计（近 {route_stats.RETENTION_DAYS} 天）', *lines])
++
+     def _push_summary(self, result: OperationResult) -> None:
+         """任务结束推送收益摘要，按本应用的节点通知设置发送；用户手动停止不推送。
+ 
+@@ -255,8 +272,6 @@ class BagelApp(ZApplication):
+         所以在这里按节点通知的同一套规则发送：关闭不发，仅失败时只在异常停止时发，
+         合并时放进通知池，由框架在应用结束时一起发出。
+         """
+-        if self.ctx.run_context.is_context_stop:
+-            return
+         if not self.ctx.notify_config.enable_notify or not self.ctx.run_context.is_app_need_notify(self.app_id):
+             return
+         mode = self.ctx.notify_config.get_app_detail_mode(self.app_id)
+@@ -266,11 +281,17 @@ class BagelApp(ZApplication):
+             return
+         # 失败原因常带「；」后的细节，推送只取第一段。
+         stop_reason = None if result.success else str(result.status).split('；')[0]
++        if self.ctx.run_context.is_context_stop:
++            # 手动/外部停止也算一次收尾，照样发摘要，免得只收到框架那条「运行失败」。
++            log.info('贝果已停止（%s）：仍然推送本次收益摘要', stop_reason)
+         summary = self._stats.summary(stop_reason)
+         if summary is None:
+             return
+         title = f'{gt("任务")}「{gt(const.APP_NAME)}」{gt("收益统计")}'
+         content = f'{title}\n{summary}'
++        route_text = self._route_push_text()
++        if route_text is not None:
++            content = f'{content}\n{route_text}'
+         if mode == NotifyDetailMode.MERGE.value.value:
+             self.ctx.run_context.notify_pool.add(content=content)
+         else:
+@@ -300,7 +321,9 @@ class BagelApp(ZApplication):
+         self.rounds_since_sell = 0
+         self.empty_rounds = 0
+         self.defeat_rounds = 0
++        self.death_streak = 0
+         self.consecutive_failures = 0
++        self.limit_restarts = 0
+         self.route_failures = {}
+         self.failure_retry_pending = False
+         self.failure_reason = None
+@@ -332,6 +355,21 @@ class BagelApp(ZApplication):
+         self._round_pickup_presses = 0
+         self._round_needs_organize = False
+ 
++    def _is_death_round(self) -> bool:
++        """本局是否被怪打倒：失败原因来自撤离失败，或结算页出现 DEFEAT。
++
++        被击倒是不可控结果，脚本再努力也躲不掉；把它算进连续失败会让任务
++        在半路自己停掉，所以单独统计。
++        """
++        reason = str(self.failure_reason or '')
++        if reason.startswith(BagelOperation.STATUS_DEFEATED):
++            return True
++        try:
++            return is_bagel_result(self)
++        except Exception:
++            log.warning('识别阵亡结算页失败', exc_info=True)
++            return False
++
+     def _count_round_failure(self) -> None:
+         """失败局计入全局连续失败；已执行路线时同时计入该路线。"""
+         self.consecutive_failures += 1
+@@ -342,6 +380,7 @@ class BagelApp(ZApplication):
+     def _clear_round_failures(self) -> None:
+         """成功入仓清零全局计数和本局路线的计数；其他路线的计数保留。"""
+         self.consecutive_failures = 0
++        self.death_streak = 0
+         if self._round_route is not None:
+             self.route_failures.pop(str(self._round_route.ref), None)
+ 
+@@ -818,8 +857,17 @@ class BagelApp(ZApplication):
+             else previous.status if previous is not None else '局内失败'
+         )
+         release_flow_inputs(self.ctx)
+-        self._count_round_failure()
+-        self._stats.set_outcome(stats.OUTCOME_FAILED)
++        is_death = self._is_death_round()
++        if is_death:
++            # 被怪打倒不可控：不记连续失败，只记一局阵亡，避免「被打死」把任务顶停。
++            self.death_streak = getattr(self, 'death_streak', 0) + 1
++            self._stats.set_outcome(stats.OUTCOME_DEFEATED)
++            log.warning('本局阵亡：%s。被击倒不计入连续失败（连续阵亡 %s 局）。%s。',
++                        self.failure_reason, self.death_streak, self._failure_progress())
++        else:
++            self.death_streak = 0
++            self._count_round_failure()
++            self._stats.set_outcome(stats.OUTCOME_FAILED)
+         self._record_round_income(read_hud=False)
+         path = screenshot.save_screenshot(self.ctx, self.last_screenshot, 'BagelApp')
+         self.failure_history.append({
+@@ -829,8 +877,9 @@ class BagelApp(ZApplication):
+             'route': str(self._round_route.ref) if self._round_route is not None else None,
+             'route_failures': self._round_route_failures(),
+         })
+-        log.error('本局失败：%s。程序正在退出并处理仓库结算。本局不计成功。%s。',
+-                  self.failure_reason, self._failure_progress())
++        if not is_death:
++            log.error('本局失败：%s。程序正在退出并处理仓库结算。本局不计成功。%s。',
++                      self.failure_reason, self._failure_progress())
+         usage.log_screenshot(path)
+         return self._finish_failed_round(BagelExit(self.ctx).execute(), '退出')
+ 
+@@ -892,8 +941,46 @@ class BagelApp(ZApplication):
+             return f'连续失败 {self.consecutive_failures} 局'
+         if route is not None and self._round_route_failures() >= limit:
+             return f'路线「{route.name}」连续失败 {self._round_route_failures()} 局'
++        # 阵亡不可控，额度放宽到失败的 2 倍，只防「一直被秒」的空转。
++        death_limit = max(3, limit * 2)
++        streak = getattr(self, 'death_streak', 0)
++        if streak >= death_limit:
++            return f'连续阵亡 {streak} 局'
+         return None
+ 
++    def _restart_game_after_limit(self, subject: str, limit: int) -> OperationRoundResult | None:
++        """连续失败达到上限时关掉游戏重开再跑；关闭或重启次数用尽时返回 None 走原停止逻辑。
++
++        重开游戏能清掉一局里残留的状态（贴墙、卡在副本、进错画面），是这轮 45 秒点位超时的
++        最后一道自救；重开后连续失败、连续阵亡与各路线失败计数一并清零，避免立刻又撞上限。
++        """
++        if not self.config.restart_game_on_fail_limit:
++            return None
++        allowed = self.config.fail_limit_restarts
++        if allowed > 0 and self.limit_restarts >= allowed:
++            log.warning('贝果%s，达到上限 %s；本次任务已重启游戏 %s 次（上限 %s），不再重启，停止任务',
++                        subject, limit, self.limit_restarts, allowed)
++            return None
++        self.limit_restarts += 1
++        log.warning('贝果%s，达到上限 %s：关闭游戏并重新启动，第 %s 次重开（上限 %s，0 表示不限），'
++                    '重开后再继续跑；最后一局失败：%s',
++                    subject, limit, self.limit_restarts, allowed, self.failure_reason)
++        self.ctx.controller.close_game()
++        time.sleep(3)
++        opened = execute_foreign_operation(OpenGame(self.ctx))
++        if not opened.success:
++            log.error('贝果重开游戏失败：%s；停止任务', opened.status)
++            return None
++        entered = execute_foreign_operation(EnterGame(self.ctx))
++        if not entered.success:
++            log.error('贝果重开后进入游戏失败：%s；停止任务', entered.status)
++            return None
++        self.consecutive_failures = 0
++        self.death_streak = 0
++        self.route_failures = {}
++        log.info('贝果已重开游戏并回到大世界，连续失败与连续阵亡计数清零，继续入场')
++        return self.round_success('重开游戏后继续入场')
++
+     @node_from(from_name='失败局结算仓库')
+     @operation_node(name='判断连续失败次数', screenshot_before_round=False)
+     def decide_defeat_rounds(self) -> OperationRoundResult:
+@@ -919,6 +1006,9 @@ class BagelApp(ZApplication):
+                 return self.round_success(self.STATUS_CARDS_OUT)
+             self.failure_retry_pending = True
+             return self.round_success('继续入场')
++        restarted = self._restart_game_after_limit(subject, limit)
++        if restarted is not None:
++            return restarted
+         return self.round_fail(
+             f'{subject}，达到上限 {limit}，已完成仓库结算，停止自动重开；'
+             f'最后一局失败：{self.failure_reason}',
+diff --git a/config.py b/config.py
+index 1f087f0..eb4877e 100644
+--- a/config.py
++++ b/config.py
+@@ -201,6 +201,45 @@ class BagelConfig(ApplicationConfig):
+             raise ValueError('max_consecutive_failures 必须是 1 至 10 的整数')
+         self.update('max_consecutive_failures', value)
+ 
++    @property
++    def restart_game_on_fail_limit(self) -> bool:
++        """连续失败达到上限时是否重启游戏再跑；默认开启。"""
++        value = self.get('restart_game_on_fail_limit', True)
++        return value if type(value) is bool else True
++
++    @restart_game_on_fail_limit.setter
++    def restart_game_on_fail_limit(self, value: bool) -> None:
++        """保存「连续失败后重启游戏」开关。"""
++        if type(value) is not bool:
++            raise ValueError('restart_game_on_fail_limit 必须是布尔值')
++        self.update('restart_game_on_fail_limit', value)
++
++    @property
++    def fail_limit_restarts(self) -> int:
++        """一次任务里允许因连续失败重启游戏几次；0 表示不限，默认 3。"""
++        value = self.get('fail_limit_restarts', 3)
++        return value if type(value) is int and 0 <= value <= 99 else 3
++
++    @fail_limit_restarts.setter
++    def fail_limit_restarts(self, value: int) -> None:
++        """保存重启次数上限。"""
++        if type(value) is not int or not 0 <= value <= 99:
++            raise ValueError('fail_limit_restarts 必须是 0 至 99 的整数')
++        self.update('fail_limit_restarts', value)
++
++    @property
++    def overlay_opacity(self) -> int:
++        """运行悬浮窗底色的不透明度百分比；0 只留文字，100 纯黑不透明。"""
++        value = self.get('overlay_opacity', 70)
++        return value if type(value) is int and 0 <= value <= 100 else 70
++
++    @overlay_opacity.setter
++    def overlay_opacity(self, value: int) -> None:
++        """保存悬浮窗底色不透明度。"""
++        if type(value) is not int or not 0 <= value <= 100:
++            raise ValueError('overlay_opacity 必须是 0 至 100 的整数')
++        self.update('overlay_opacity', value)
++
+     @property
+     def blueprint_priority(self) -> bool:
+         """蓝图是否优先于全部非蓝图入箱；旧配置缺项也开启。"""
+@@ -384,6 +423,14 @@ class BagelConfig(ApplicationConfig):
+         failures = self.max_consecutive_failures
+         if type(failures) is not int or not 1 <= failures <= 10:
+             raise ValueError('max_consecutive_failures 必须是 1 至 10 的整数')
++        restarts = self.get('fail_limit_restarts', 3)
++        if type(restarts) is not int or not 0 <= restarts <= 99:
++            raise ValueError('fail_limit_restarts 必须是 0 至 99 的整数')
++        if type(self.restart_game_on_fail_limit) is not bool:
++            raise ValueError('restart_game_on_fail_limit 必须是布尔值')
++        opacity = self.get('overlay_opacity', 70)
++        if type(opacity) is not int or not 0 <= opacity <= 100:
++            raise ValueError('overlay_opacity 必须是 0 至 100 的整数')
+         if type(self.blueprint_priority) is not bool:
+             raise ValueError('blueprint_priority 必须是布尔值')
+         if type(self.auto_clean_warehouse) is not bool:
+diff --git a/gui/route_web_editor.py b/gui/route_web_editor.py
+index 85dd162..a151c16 100644
+--- a/gui/route_web_editor.py
++++ b/gui/route_web_editor.py
+@@ -175,6 +175,8 @@ class BagelRouteEditor(QDialog):
+         self._locate_index: int = -1
+         """正在定位替换的点序号；-1 表示没有进行中的定位。"""
+         self.run_overlay: BagelRunOverlay | None = None
++        self._overlay_opacity: int = 70
++        """运行悬浮窗底色不透明度百分比，由设置页传入。"""
+         self._page_ready: bool = False
+         self._close_confirmed: bool = False
+         """网页已确认没有未保存修改，可以真正关闭。"""
+@@ -678,6 +680,7 @@ class BagelRouteEditor(QDialog):
+             return
+         if self.run_overlay is None:
+             self.run_overlay = BagelRunOverlay()
++            self.run_overlay.set_backdrop_opacity(self._overlay_opacity)
+         if not self._run_overlay_timer.isActive():
+             self._run_overlay_timer.start()
+         from .route_test_thread import decision_lines
+@@ -697,6 +700,17 @@ class BagelRouteEditor(QDialog):
+         )
+         self.run_overlay.show()
+ 
++    def set_overlay_opacity(self, percent: int) -> None:
++        """设置运行悬浮窗底色的不透明度，供设置页在打开编辑器时注入。
++
++        Args:
++            percent: 0~100 的百分比。
++        """
++        percent = max(0, min(100, int(percent)))
++        self._overlay_opacity = percent
++        if self.run_overlay is not None:
++            self.run_overlay.set_backdrop_opacity(percent)
++
+     def _sync_run_overlay(self) -> None:
+         """执行态悬浮窗跟随游戏窗口位置与显隐。"""
+         overlay = self.run_overlay
+diff --git a/gui/run_overlay.py b/gui/run_overlay.py
+index 3e4de4a..9c24b44 100644
+--- a/gui/run_overlay.py
++++ b/gui/run_overlay.py
+@@ -80,7 +80,9 @@ KIND_LABELS: dict[str, str] = {
+ """点位类型到短名，用于决策行里的目标描述。"""
+ 
+ TEXT_COLOR = QColor(232, 232, 232)
+-BACKDROP = QColor(0, 0, 0, 190)
++DEFAULT_BACKDROP_ALPHA: int = 190
++"""运行悬浮窗底色的默认不透明度，0 完全透明、255 纯黑不透明。"""
++BACKDROP = QColor(0, 0, 0, DEFAULT_BACKDROP_ALPHA)
+ MAP_BACKDROP = QColor(28, 28, 30, 235)
+ MAP_BORDER = QColor(90, 90, 96, 220)
+ POSITION_COLOR = QColor(255, 90, 90)
+@@ -123,6 +125,8 @@ class BagelRunOverlay(QWidget):
+         self._font: QFont = QFont('Consolas', 10)
+         self._font.setBold(True)
+         self.setFixedSize(*self._content_size())
++        self._backdrop_alpha: int = DEFAULT_BACKDROP_ALPHA
++        """文本面板底色不透明度，由设置页的百分比换算而来。"""
+ 
+         self._layer_name: str | None = None
+         self._layer_pixmap: QPixmap | None = None
+@@ -147,6 +151,19 @@ class BagelRunOverlay(QWidget):
+         if not self.isVisible():
+             self.show()
+ 
++    def set_backdrop_opacity(self, percent: int) -> None:
++        """设置文本面板底色的不透明度。
++
++        Args:
++            percent: 0~100 的百分比，0 表示底色完全透明、只留文字。
++        """
++        percent = max(0, min(100, int(percent)))
++        alpha = round(255 * percent / 100)
++        if alpha == self._backdrop_alpha:
++            return
++        self._backdrop_alpha = alpha
++        self.update()
++
+     def set_lines(self, lines: list[str]) -> None:
+         """更新文本行。
+ 
+@@ -261,7 +278,7 @@ class BagelRunOverlay(QWidget):
+         painter = QPainter(self)
+         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+         painter.setFont(self._font)
+-        painter.fillRect(self.rect(), BACKDROP)
++        painter.fillRect(self.rect(), QColor(0, 0, 0, self._backdrop_alpha))
+ 
+         metrics = painter.fontMetrics()
+         text_height = self._text_height(metrics)
+diff --git a/gui/setting_interface.py b/gui/setting_interface.py
+index caf6f0d..816f89e 100644
+--- a/gui/setting_interface.py
++++ b/gui/setting_interface.py
+@@ -226,6 +226,15 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
+         self.keycard_card: QWidget = self._make_keycard_card(widget)
+         layout.addWidget(self.keycard_card)
+         layout.addWidget(self._make_end_conditions(widget))
++        self.restart_game_switch: SwitchSettingCard = SwitchSettingCard(
++            icon=FluentIcon.SYNC,
++            title='连续失败后重开游戏',
++            content='达到上限时关闭游戏重新启动，再继续跑贝果',
++            parent=widget,
++        )
++        self.restart_game_switch.setFixedHeight(88)
++        layout.addWidget(self.restart_game_switch)
++        layout.addWidget(self._make_overlay_card(widget))
+         self.blueprint_priority: SwitchSettingCard = SwitchSettingCard(
+             icon=FluentIcon.DOCUMENT,
+             title='蓝图优先',
+@@ -508,7 +517,44 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
+         sentence.addWidget(BodyLabel('次后结束任务', card))
+         sentence.addStretch(1)
+         layout.addLayout(sentence)
+-        hint = CaptionLabel('成功次数为 0 表示不限；全局或同一路线连续失败达到上限时结束。', card)
++        restart_row = QHBoxLayout()
++        restart_row.setSpacing(8)
++        self.restart_count: CountSpinBox = CountSpinBox(0, 99, card)
++        self.restart_count.setAccessibleName('连续失败重开游戏次数')
++        restart_row.addWidget(BodyLabel('达到上限时最多重开游戏', card))
++        restart_row.addWidget(self.restart_count)
++        restart_row.addWidget(BodyLabel('次（0 表示不限）', card))
++        restart_row.addStretch(1)
++        layout.addLayout(restart_row)
++        hint = CaptionLabel(
++            '成功次数为 0 表示不限；全局或同一路线连续失败达到上限时结束。'
++            '开启重开游戏后，达到上限会关掉游戏重新启动再继续跑，重开次数用尽才结束任务。',
++            card,
++        )
++        hint.setWordWrap(True)
++        layout.addWidget(hint)
++        return card
++
++    def _make_overlay_card(self, parent: QWidget) -> QWidget:
++        """运行悬浮窗的底色不透明度。"""
++        card = SimpleCardWidget(parent)
++        layout = QVBoxLayout(card)
++        layout.setContentsMargins(18, 18, 18, 18)
++        layout.setSpacing(8)
++        row = QHBoxLayout()
++        row.setSpacing(8)
++        self.overlay_opacity: CountSpinBox = CountSpinBox(0, 100, card)
++        self.overlay_opacity.setAccessibleName('运行悬浮窗不透明度')
++        row.addWidget(BodyLabel('运行悬浮窗底色不透明度', card))
++        row.addWidget(self.overlay_opacity)
++        row.addWidget(BodyLabel('%（0 只留文字，100 纯黑不透明）', card))
++        row.addStretch(1)
++        layout.addLayout(row)
++        hint = CaptionLabel(
++            '调整执行时屏幕左上角那几行运行日志与自绘小地图的底色深浅；'
++            '只影响插件自己的悬浮窗，不影响主程序 Overlay。',
++            card,
++        )
+         hint.setWordWrap(True)
+         layout.addWidget(hint)
+         return card
+@@ -778,6 +824,7 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
+             log.error('打开贝果路线编辑器失败', exc_info=True)
+             MessageBox('无法打开路线编辑器', str(error), self.window()).exec()
+             return
++        editor.set_overlay_opacity(self.config.overlay_opacity if self.config else 70)
+         editor.exec()
+         editor.deleteLater()
+         if self.config is None:
+@@ -803,6 +850,9 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
+         self.blueprint_priority.init_with_adapter(
+             get_prop_adapter(self.config, 'blueprint_priority'),
+         )
++        self.restart_game_switch.init_with_adapter(
++            get_prop_adapter(self.config, 'restart_game_on_fail_limit'),
++        )
+         problem = self.config.stored_mode_map_problem()
+         if problem is not None:
+             # 手改配置写进了不认识的值：把界面按默认显示的值写回，启动校验才放行。
+@@ -819,6 +869,8 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
+         for control, field in (
+             (self.success_count, 'max_success_rounds'),
+             (self.failure_count, 'max_consecutive_failures'),
++            (self.restart_count, 'fail_limit_restarts'),
++            (self.overlay_opacity, 'overlay_opacity'),
+             (self.sell_interval, 'sell_interval'),
+             (self.auto_clean_switch, 'auto_clean_warehouse'),
+             (self.clean_mode, 'clean_mode'),
+diff --git a/route/input_worker.py b/route/input_worker.py
+index 7bcece0..6a9a51d 100644
+--- a/route/input_worker.py
++++ b/route/input_worker.py
+@@ -18,6 +18,7 @@
+ from __future__ import annotations
+ 
+ import math
++import statistics
+ import threading
+ import time
+ from collections import deque
+@@ -92,8 +93,11 @@ TURN_TARGET_FRESH_SECONDS: float = 1.0
+ 远小于这个值，不影响。"""
+ 
+ TURN_RATIO_MIN: float = 0.2
+-TURN_RATIO_MAX: float = 20.0
+-"""可信校准值范围；超出说明样本被别的动作污染，直接丢弃。"""
++TURN_RATIO_MAX: float = 2.5
++"""可信校准值范围；超出说明样本被别的动作污染，直接丢弃。
++
++实测本机真实倍率在 1.0~1.15，取 2.5 留足余量。原先放到 20.0，一旦污染样本
++把倍率顶到 15 以上，后续下发角被压到 1/15，永远转不到位，只能等点位超时。"""
+ 
+ STOP_TURN_CAP: float = 180.0
+ """停车转的单次上限（度）：偏差多大就一把转到位，最大 180 度（掉头）。"""
+@@ -120,7 +124,19 @@ TURN_PREEMPT_ANGLE: float = 45.0
+ """新目标与当前稳定朝向差达到此值时，宽限过后不再等 1 秒静止超时，直接放行大转向。"""
+ 
+ TURN_RATIO_PEAK_BIN_WIDTH: float = 0.05
+-"""实时校准分箱宽度：箱以 1.0 为中心（如 0.975~1.025），每样本只做一次槽计数加一与峰值比较。"""
++"""历史字段：峰值槽宽度，已改为样本窗口取中位数，保留只为兼容旧日志与配置。"""
++
++TURN_RATIO_SAMPLE_WINDOW: int = 9
++"""校准样本窗口长度：取中位数。样本常在 1.0 与 2.1 两簇之间抖，踩峰值槽会卡在错的那簇。"""
++
++TURN_RATIO_STEP_LIMIT: float = 1.25
++"""单个样本最多让校准值变化这么多倍，防止一笔干扰读数把倍率带飞。"""
++
++TURN_HEADING_OFFSET_LIMIT: float = 45.0
++"""实际转角与下发角之差超过它，且下发角不大时，判为朝向读数跳变而非灵敏度偏差。
++
++贴墙或扇区被挡时小地图朝向会在两个解之间跳（实测常差 80 度、150 度），
++差值模型下这种样本会让 实际/名义 瞬间冲到十几倍，必须直接丢弃。"""
+ 
+ TURN_RATIO_PRIOR_WEIGHT: int = 3
+ """跨局可信起步值在峰值箱中的先验票数：防止开局首样本或 2 个受击噪声样本直接劫持本局比例。"""
+@@ -128,8 +144,10 @@ TURN_RATIO_PRIOR_WEIGHT: int = 3
+ TURN_RATIO_OUTLIER_FACTOR: float = 1.4
+ """已有可信基准时，单次样本相对当前校准值的正常倍率带（[ratio/它, ratio*它]）；超出视为受击或背景干扰。"""
+ 
+-TURN_RATIO_OUTLIER_ACCEPT_STREAK: int = 3
+-"""连续这么多笔落在离群带外才放行入箱：拦住偶发干扰，同时允许局内真实灵敏度变化收敛。"""
++TURN_RATIO_OUTLIER_ACCEPT_STREAK: int = 8
++"""连续这么多笔落在离群带外才放行入箱：拦住偶发干扰，同时允许局内真实灵敏度变化收敛。
++
++原先 3 笔就放行，朝向跳变会连着给出同向偏差样本，三次即可污染整窗。"""
+ 
+ TURN_RATIO_CLAMP_WARN_STREAK: int = 5
+ """校准值连续这么多个样本贴着可信区间的边界，就提示可能需要重做灵敏度检测。"""
+@@ -153,15 +171,19 @@ TURN_STILL_TIMEOUT: float = 1.0
+ 下发后 0.4 + 1.0 秒还没动静，继续等只会饿死后续转向，所以消费掉
+ 这一笔让下一笔能转。校准值本身任何时候都不重置，只靠正常样本平滑收敛。"""
+ 
+-TURN_RATIO_MIN_ANGLE: float = 3.0
+-"""实际转角小于它就不采样：角度太小，量化误差占比过大。"""
++TURN_RATIO_MIN_ANGLE: float = 40.0
++"""实际转角小于它就不采样：小角度样本里朝向读数的固定偏差会被放大成假倍率。"""
+ 
+ TURN_RATIO_MIN_DELTA: float = 0.5
+ """实际转角小于它视为画面还没跟上，样本留到下一轮再算。"""
+ 
+-TURN_HINT_MIN_SAMPLES: int = 10
++TURN_HINT_MIN_SAMPLES: int = 12
+ """一局至少攒到这么多个有效样本，才把本局比例留作下一局的起步值。"""
+ 
++TURN_HINT_MIN_RATIO: float = 0.5
++TURN_HINT_MAX_RATIO: float = 2.0
++"""跨局起步值的可信范围；超出直接复位 1.0，避免一局污染后续所有局。"""
++
+ TURN_DX_WARN_RATIO: float = 1.3
+ """本局比例超出 [1/它, 它] 算明显偏离：turn_dx 与游戏灵敏度可能不符。
+ 
+@@ -323,12 +345,16 @@ class _TurnWorker:
+         self._peak_key: int | None = None
+         """当前最高的槽号；不如它就保持不变。"""
+         self._peak_count: int = 0
+-        """最高槽的样本数。"""
++        """最高槽的样本数（历史字段，不再参与校准）。"""
++        self._ratio_samples: deque[float] = deque(maxlen=TURN_RATIO_SAMPLE_WINDOW)
++        """最近的校准样本；取中位数得到本局倍率。"""
+         if trust_initial_ratio and TURN_RATIO_MIN <= initial_ratio <= TURN_RATIO_MAX:
+             prior_key = math.floor((initial_ratio - 1.0) / TURN_RATIO_PEAK_BIN_WIDTH + 0.5 + 1e-9)
+             self._peak_bins[prior_key] = TURN_RATIO_PRIOR_WEIGHT
+             self._peak_key = prior_key
+             self._peak_count = TURN_RATIO_PRIOR_WEIGHT
++            # 可信起步值也进样本窗口：中位数前几笔不会被两个噪声样本带偏。
++            self._ratio_samples.extend([initial_ratio] * TURN_RATIO_PRIOR_WEIGHT)
+         self._outlier_streak: int = 0
+         """连续落出当前可信校准值倍率带的样本计数。"""
+         self._clamp_streak: int = 0
+@@ -378,6 +404,7 @@ class _TurnWorker:
+             self._peak_bins.clear()
+             self._peak_key = None
+             self._peak_count = 0
++            self._ratio_samples.clear()
+             self._outlier_streak = 0
+             self._clamp_streak = 0
+         self._wake.set()
+@@ -593,13 +620,20 @@ class _TurnWorker:
+         if delta * pending <= 0:
+             return True
+         sample = abs(delta) / abs(pending)
++        offset = abs(delta - pending)
++        if offset > TURN_HEADING_OFFSET_LIMIT and abs(pending) < TURN_CHUNK_MAX_DESIRED / 2:
++            # 小命令却转出一大截：这是朝向读数跳变，不是灵敏度偏差，不能进校准窗口。
++            log.info(
++                '贝果朝向读数跳变，忽略校准样本：名义 %.1f 实际 %.1f（差 %.1f）',
++                pending, delta, offset,
++            )
++            return True
+         if chunks > 1:
+-            # 拆段连发的等效倍率高于单段，不写入单段峰值箱，避免把单段校准值拉高导致中等角度欠转。
++            # 拆段连发也参与校准：全丢会导致大角度局永远学不到，倍率一旦偏高就锁死。
+             log.info(
+-                '贝果转向校准分段样本，不更新比例：%.2f（名义 %.1f 实际 %.1f，分 %s 段，当前校准 %.3f）',
++                '贝果转向校准分段样本入窗：%.2f（名义 %.1f 实际 %.1f，分 %s 段，当前校准 %.3f）',
+                 sample, pending, delta, chunks, self.turn_ratio,
+             )
+-            return True
+         with self._lock:
+             if not (TURN_RATIO_MIN <= sample <= TURN_RATIO_MAX):
+                 log.info(
+@@ -607,6 +641,15 @@ class _TurnWorker:
+                     sample, pending, delta,
+                 )
+                 return True
++            if self.turn_ratio > TURN_RATIO_MAX * 0.75 and sample < TURN_RATIO_MAX * 0.75:
++                # 当前值已经高到不可能是真灵敏度（实测 1.0~1.15），直接回到正常簇。
++                log.warning(
++                    '贝果转向校准值 %.3f 疑似被污染，复位到 %.2f',
++                    self.turn_ratio, sample,
++                )
++                self._ratio_samples.clear()
++                self._outlier_streak = 0
++                self.turn_ratio = min(max(sample, 1.0), TURN_RATIO_MAX)
+             trusted_ref = self._trust_initial_ratio or self.turn_samples >= TURN_CAP_TRUST_SAMPLES
+             ref = self.turn_ratio
+             if trusted_ref and ref > 0 and not (
+@@ -621,18 +664,17 @@ class _TurnWorker:
+                     return True
+             else:
+                 self._outlier_streak = 0
+-            key = math.floor((sample - 1.0) / TURN_RATIO_PEAK_BIN_WIDTH + 0.5 + 1e-9)
+-            slot_count = self._peak_bins.get(key, 0) + 1
+-            self._peak_bins[key] = slot_count
+-            if self._peak_key is None or slot_count > self._peak_count:
+-                self._peak_key = key
+-                self._peak_count = slot_count
+-                self.turn_ratio = 1.0 + key * TURN_RATIO_PEAK_BIN_WIDTH
++            self._ratio_samples.append(sample)
++            median = statistics.median(self._ratio_samples)
++            low = self.turn_ratio / TURN_RATIO_STEP_LIMIT
++            high = self.turn_ratio * TURN_RATIO_STEP_LIMIT
++            candidate = min(max(median, low), high)
++            self.turn_ratio = min(max(candidate, TURN_RATIO_MIN), TURN_RATIO_MAX)
+             self.turn_samples += 1
+-            ratio, total = self.turn_ratio, self.turn_samples
++            ratio, total, window = self.turn_ratio, self.turn_samples, len(self._ratio_samples)
+         log.info(
+-            '贝果转向校准 %.3f（样本 %.2f，峰值槽 %s 个，名义 %.1f 实际 %.1f，共 %s 次）',
+-            ratio, sample, self._peak_count, pending, delta, total,
++            '贝果转向校准 %.3f（样本 %.2f，窗口 %s 个中位 %.2f，名义 %.1f 实际 %.1f，共 %s 次）',
++            ratio, sample, window, median, pending, delta, total,
+         )
+         if TURN_RATIO_MIN * 1.2 <= ratio <= TURN_RATIO_MAX / 1.2:
+             with self._lock:
+@@ -675,6 +717,15 @@ class TurnRatioMemory:
+         """
+         if samples < TURN_HINT_MIN_SAMPLES or ratio <= 0:
+             return
++        if not (TURN_HINT_MIN_RATIO <= ratio <= TURN_HINT_MAX_RATIO):
++            log.warning(
++                '贝果转向校准值 %.3f 超出跨局可信范围，起步值复位 1.0（本局 %s 个样本）',
++                ratio, samples,
++            )
++            self.hint = 1.0
++            self.trusted = False
++            self._off_rounds = 0
++            return
+         self.hint = ratio
+         self.trusted = True
+         if 1.0 / TURN_DX_WARN_RATIO <= ratio <= TURN_DX_WARN_RATIO:
+diff --git a/route/route_recorder.py b/route/route_recorder.py
+index 0bfab03..cfc82eb 100644
+--- a/route/route_recorder.py
++++ b/route/route_recorder.py
+@@ -74,13 +74,27 @@ UNDO_KEY = 'backspace'
+ def is_foreground(hwnd: int) -> bool:
+     """判断窗口是否为当前前台窗口。
+ 
++    无边框全屏下画面铺满，但键盘焦点可以被通知、开始菜单或任何别的窗口抢走，
++    所以比较根窗口而不是句柄本身；拿不到前台句柄时按前台处理，避免误停。
++
+     Args:
+         hwnd: 窗口句柄。
+ 
+     Returns:
+         前台时为 True。
+     """
+-    return int(ctypes.windll.user32.GetForegroundWindow()) == int(hwnd)
++    if not hwnd:
++        return True
++    try:
++        fg = int(ctypes.windll.user32.GetForegroundWindow() or 0)
++        if not fg:
++            return True
++        if fg == int(hwnd):
++            return True
++        root = ctypes.windll.user32.GetAncestor
++        return root(fg, 2) == root(int(hwnd), 2)
++    except Exception:
++        return True
+ 
+ 
+ def wait_foreground(hwnd: int, timeout: float, stop: Event | None = None) -> bool:
+diff --git a/route/route_stats.py b/route/route_stats.py
+index 2d2fa8c..742021d 100644
+--- a/route/route_stats.py
++++ b/route/route_stats.py
+@@ -18,6 +18,7 @@ from one_dragon.utils.log_utils import log
+ 
+ from ..defs import get_plugin_data_dir
+ from ..stats import (
++    OUTCOME_DEFEATED,
+     OUTCOME_SUCCESS,
+     OUTCOME_UNSUPPORTED,
+     format_duration,
+@@ -204,6 +205,73 @@ def extra_hourly(income: float, seconds: float, restart_seconds: float | None) -
+     return income / (seconds - restart_seconds) * 3600
+ 
+ 
++PUSH_LINE_LIMIT: int = 12
++"""推送里最多列多少条路线；超出的省略并注明条数，完整表仍在日志里。"""
++
++
++def push_lines(
++    records: list[BagelRouteRecord], catalog: BagelRouteCatalog, limit: int = PUSH_LINE_LIMIT,
++) -> list[str]:
++    """推送用的路线汇总：每个出生点一行「路线：打了 N 局 · 成功率 X%」。
++
++    只列当前开启路线（本版本）在保留期内有记录的出生点，没记录的不占行；
++    超过 ``limit`` 条的省略并注明条数，完整表见日志。
++
++    Args:
++        records: 保留期内的记录。
++        catalog: 当前路线设置；只统计各出生点当前开启路线的当前版本。
++        limit: 最多列出多少条路线。
++    """
++    lines: list[str] = []
++    omitted = 0
++    map_ids = sorted({record.map_id for record in records if record.map_id is not None})
++    for map_id in map_ids:
++        map_records = [record for record in records if record.map_id == map_id]
++        restarts = [record for record in map_records if record.outcome == OUTCOME_UNSUPPORTED]
++        for spawn in catalog.spawns:
++            if spawn.map_id != map_id:
++                continue
++            text = _push_spawn_text(spawn, map_records, restarts, catalog)
++            if text is None:
++                continue
++            if len(lines) >= limit:
++                omitted += 1
++                continue
++            lines.append(text)
++    if omitted:
++        lines.append(f'…另有 {omitted} 条路线，明细见日志')
++    return lines
++
++
++def _push_spawn_text(spawn, map_records: list[BagelRouteRecord], restarts: list[BagelRouteRecord],
++                     catalog: BagelRouteCatalog) -> str | None:
++    """一个出生点的一行推送文本；该出生点在保留期内没有记录时返回 None。"""
++    ref = catalog.active_ref(spawn.spawn_id)
++    route = catalog.route(ref) if ref is not None else None
++    if route is None:
++        own = [record for record in restarts if record.spawn_id == spawn.spawn_id]
++        if not own:
++            return None
++        return f'{spawn.name} · 直接重开：打了 {len(own)} 局'
++    version = route_version(route)
++    rows = [
++        record for record in map_records
++        if record.spawn_id == spawn.spawn_id and record.route_source == route.source
++        and record.route_id == route.route_id and record.route_version == version
++    ]
++    if not rows:
++        return None
++    success = sum(1 for record in rows if record.outcome == OUTCOME_SUCCESS)
++    text = f'{spawn.name} · {route.name}：打了 {len(rows)} 局 · 成功率 {success / len(rows):.0%}'
++    deaths = sum(1 for record in rows if record.outcome == OUTCOME_DEFEATED)
++    if deaths:
++        text += f' · 阵亡 {deaths}'
++    known = [record for record in rows if record.income is not None]
++    if known:
++        text += f' · 每局 {format_value(round(_mean([float(record.income or 0) for record in known])))}'
++    return text
++
++
+ def report_lines(records: list[BagelRouteRecord], catalog: BagelRouteCatalog) -> list[str]:
+     """按地图、出生点生成汇总表，每行一条日志。
+ 
+diff --git a/route/route_walker.py b/route/route_walker.py
+index 4870edb..08b860b 100644
+--- a/route/route_walker.py
++++ b/route/route_walker.py
+@@ -19,6 +19,7 @@
+ 
+ from __future__ import annotations
+ 
++import ctypes
+ import re
+ import time
+ from math import atan2, cos, degrees, hypot, radians, sin
+@@ -224,6 +225,27 @@ SMALL_STEP_PRESS: float = 0.10
+ 实测按 0.05、0.08 秒每步都约 0.4px，0.12 秒约 0.8px；0.10 秒落在两档之间，
+ 尚未单独标定，按线性推算约 0.6px。"""
+ 
++ANGLE_JITTER_TOLERANCE: float = 25.0
++"""朝向读数与上一稳定值偏差在它以内视为同一朝向（度）。"""
++
++ANGLE_JUMP_IGNORE: float = 110.0
++"""朝向读数与上一稳定值偏差超过它，视为贴墙时的读数跳变（度），先不信。"""
++
++ANGLE_JUMP_PERSIST_FRAMES: int = 4
++"""跳变读数连续这么多帧都一样才承认是真转了（贴墙时读数常在两个解之间跳）。"""
++
++BLIND_WALK_SECONDS: float = 3.0
++"""停车等转向这么久还没有位移，就盲走一小步（秒）。"""
++
++BLIND_WALK_PRESS: float = 0.22
++"""盲走单次按压时长（秒），约 1~2px，只为打破朝向抖动造成的原地僵持。"""
++
++BLIND_WALK_TRIES: int = 6
++"""同一个点最多盲走这么多次，仍无进展交给点位超时。"""
++
++BLIND_WALK_PROGRESS: float = 4.0
++"""盲走判定有进展的最小位移（px）：超过就清零计数。"""
++
+ STEP_REST_POLL: float = 0.03
+ """停顿期间主线的轮询上限（秒）：停顿结束后最多晚这么久拍到决策帧。"""
+ 
+@@ -486,6 +508,38 @@ def _closest_on_segment(
+     return (start.x + t * dx, start.y + t * dy)
+ 
+ 
++GA_ROOT: int = 2
++"""``GetAncestor`` 的根窗口标志；无边框全屏游戏的前台判断要靠它。"""
++
++_user32 = ctypes.windll.user32
++
++
++def _foreground_hwnd() -> int:
++    """当前前台窗口句柄；拿不到时返回 0。"""
++    try:
++        return int(_user32.GetForegroundWindow() or 0)
++    except Exception:
++        return 0
++
++
++def _window_title(hwnd: int) -> str:
++    """窗口标题；读不到时返回空串。"""
++    if not hwnd:
++        return ''
++    try:
++        length = _user32.GetWindowTextLengthW(hwnd)
++        buffer = ctypes.create_unicode_buffer(length + 1)
++        _user32.GetWindowTextW(hwnd, buffer, length + 1)
++        return buffer.value
++    except Exception:
++        return ''
++
++
++def _foreground_title() -> str:
++    """当前前台窗口标题；用于失焦日志。"""
++    return _window_title(_foreground_hwnd())
++
++
+ class BagelRouteWalker(BagelOperation):
+     """按打点顺序执行路线，箱类按类型交互。"""
+ 
+@@ -493,6 +547,13 @@ class BagelRouteWalker(BagelOperation):
+     STATUS_SPAWN_FAILED: str = '出生点识别失败'
+     STATUS_CONFIG_INVALID: str = '路线配置无效'
+     STATUS_NOT_FOREGROUND: str = '游戏不在前台，已停止'
++    """失焦停机；真正停机前先给 FOREGROUND_GRACE_SECONDS 宽限。"""
++
++    FOREGROUND_GRACE_SECONDS: float = 5.0
++    """短暂失焦的宽限：通知、输入法、切一下窗口都会让前台变一会儿，不该直接判死。"""
++
++    FOREGROUND_ABORT_SECONDS: float = 180.0
++    """连续失焦超过这个时长才真正停机；期间只暂停并每 10 秒记一条日志。"""
+     STATUS_DONE: str = '路线走完'
+     STATUS_KEYCARD_MISSING: str = '刷卡处显示没有对应门禁卡'
+     STATUS_FAIL_SURVEY: str = '失败前补读调查收益'
+@@ -528,6 +589,10 @@ class BagelRouteWalker(BagelOperation):
+         # 而它的回调闭包引用执行器自身，执行器结束后要等完整垃圾回收才能释放。
+         super().__init__(ctx, op_name='贝果-路线执行', timeout_seconds=-1, need_check_game_win=False)
+         self.store: BagelRouteStore = BagelRouteStore(self.ctx)
++        self._fg_lost_since: float | None = None
++        """失焦起始时刻；回到前台即清空，用于宽限与停机判断。"""
++        self._fg_logged_at: float = 0.0
++        """上次打印失焦日志的时刻；暂停期间每 10 秒记一条。"""
+         self.keycard_room: str | None = keycard_room if route_ref is None else None
+         """正式运行开房卡模式的目标房间；跑刀与试跑为 None。"""
+         try:
+@@ -680,6 +745,18 @@ class BagelRouteWalker(BagelOperation):
+         """当前是否在冲刺。"""
+         self.turning_in_place: bool = False
+         """巡航中是否已进入停车等转向；用于 ``WALK_STOP_TURN_ANGLE`` 与 ``WALK_TURN_ANGLE`` 滞回判断。"""
++        self.angle_stable: float | None = None
++        """过滤抖动后的朝向稳定值（度）。"""
++        self.angle_jump_value: float | None = None
++        """当前可疑跳变读数，用于判断它是瞬时抖一下就回来，还是真转了。"""
++        self.angle_jump_frames: int = 0
++        """可疑跳变读数连续相同的帧数。"""
++        self.blind_walk_since: float | None = None
++        """停车等转向僵持的起始时刻。"""
++        self.blind_walk_origin: tuple[float, float] | None = None
++        """僵持起点位置，用于判断盲走后有没有进展。"""
++        self.blind_walk_tries: int = 0
++        """当前点已经盲走的次数。"""
+         self.last_dodge_at: float | None = None
+         """上次点闪避的时刻（monotonic），用于冲刺点闪避的间隔控制。"""
+         self.turn_memory: TurnRatioMemory | None = turn_memory
+@@ -755,8 +832,23 @@ class BagelRouteWalker(BagelOperation):
+         self.perf.start()
+         if not self._game_in_foreground():
+             self._release_forward()
++            now = time.monotonic()
++            if self._fg_lost_since is None:
++                self._fg_lost_since = now
++            lost = now - self._fg_lost_since
++            if lost < self.FOREGROUND_GRACE_SECONDS:
++                self.decision = f'游戏不在前台 · 等回前台 {lost:.1f}s'
++                return self.round_wait(self.STATUS_NOT_FOREGROUND, wait=0.2)
++            if lost < self.FOREGROUND_ABORT_SECONDS:
++                self.decision = f'游戏不在前台 · 已暂停 {lost:.0f}s'
++                if now - self._fg_logged_at >= 10.0:
++                    self._fg_logged_at = now
++                    self._log_foreground_loss(lost)
++                return self.round_wait(self.STATUS_NOT_FOREGROUND, wait=0.5)
+             self.decision = '游戏不在前台 · 已停止'
++            self._log_foreground_loss(lost)
+             return self.round_fail(self.STATUS_NOT_FOREGROUND)
++        self._fg_lost_since = None
+         result = super()._execute_one_round()
+         node_name = '未知' if self._current_node is None else self._current_node.cn
+         status = result.status or result.status_display or ''
+@@ -823,12 +915,33 @@ class BagelRouteWalker(BagelOperation):
+             return super()._has(area, screen_name)
+ 
+     def _game_in_foreground(self) -> bool:
+-        """游戏窗口是否在前台；拿不到窗口句柄时按前台处理，避免误停。"""
++        """游戏窗口是否在前台；拿不到窗口句柄时按前台处理，避免误停。
++
++        无边框全屏下画面永远铺满，拥有焦点的是另一个窗口，所以这里比较的是
++        根窗口（``GetAncestor(GA_ROOT)``），并且容忍一次拿不到前台句柄的瞬间。
++        """
+         game_win = self.ctx.controller.game_win
+         hwnd = game_win.get_hwnd()
+-        if hwnd is None:
++        if hwnd is None or not hwnd:
++            return True
++        if is_foreground(hwnd):
+             return True
+-        return is_foreground(hwnd)
++        try:
++            fg = ctypes.windll.user32.GetForegroundWindow()
++        except Exception:
++            return True
++        if not fg:
++            return True
++        try:
++            return ctypes.windll.user32.GetAncestor(fg, GA_ROOT) == ctypes.windll.user32.GetAncestor(hwnd, GA_ROOT)
++        except Exception:
++            return False
++
++    def _log_foreground_loss(self, lost: float) -> None:
++        """失焦停机时把句柄和标题记进日志，方便事后判断被哪个窗口抢了焦点。"""
++        log.warning('贝果失焦判定：连续 %.1fs 不在前台，游戏 hwnd=%s「%s」，前台 hwnd=%s「%s」',
++                    lost, self.ctx.controller.game_win.get_hwnd(),
++                    self.ctx.controller.game_win.win_title, _foreground_hwnd(), _foreground_title())
+ 
+     # ---------- 定位 ----------
+ 
+@@ -865,7 +978,53 @@ class BagelRouteWalker(BagelOperation):
+         """
+         with self.perf.measure('朝向'):
+             _marker_vertices, _marker_edges, sector, _radius, _center = analyze(self.minimap())
+-        return sector
++        return self._smooth_angle(sector)
++
++    def _smooth_angle(self, sector: float | None) -> float | None:
++        """过滤小地图朝向的瞬时跳变，返回一个稳定的朝向读数。
++
++        贴墙或扇形被挡时，``analyze`` 会在两个解之间跳（实测常差 80 度、150 度），
++        直接拿去算目标差会让「停车等转向」每轮换一次方向，位置一步不动直到点位超时。
++        这里把单帧、两三帧的跳变吞掉；连续多帧都一样的跳变才认，保证真转身跟得上。
++
++        Args:
++            sector: 本帧识别到的朝向（度）；None 表示本帧读不到。
++
++        Returns:
++            稳定朝向（度）；尚无稳定值时返回本帧值或 None。
++        """
++        if sector is None:
++            return self.angle_stable
++        stable = self.angle_stable
++        if stable is None:
++            self.angle_stable = sector
++            self.angle_jump_value = None
++            self.angle_jump_frames = 0
++            return sector
++        gap = abs(cal_utils.angle_delta(stable, sector))
++        if gap <= ANGLE_JITTER_TOLERANCE:
++            self.angle_stable = sector
++            self.angle_jump_value = None
++            self.angle_jump_frames = 0
++            return sector
++        if gap < ANGLE_JUMP_IGNORE:
++            # 中幅变化按正常转身处理，逐步跟上去。
++            self.angle_stable = sector
++            self.angle_jump_value = None
++            self.angle_jump_frames = 0
++            return sector
++        same_jump = (
++            self.angle_jump_value is not None
++            and abs(cal_utils.angle_delta(self.angle_jump_value, sector)) <= ANGLE_JITTER_TOLERANCE
++        )
++        self.angle_jump_frames = self.angle_jump_frames + 1 if same_jump else 1
++        self.angle_jump_value = sector
++        if self.angle_jump_frames >= ANGLE_JUMP_PERSIST_FRAMES:
++            self.angle_stable = sector
++            self.angle_jump_value = None
++            self.angle_jump_frames = 0
++            return sector
++        return stable
+ 
+     # ---------- 节点 ----------
+ 
+@@ -2298,6 +2457,53 @@ class BagelRouteWalker(BagelOperation):
+         self.input_worker.submit_turn(None)
+         return self.round_wait(f'未识别到朝向，停下等待（{missed:.1f}s）', wait=0.1)
+ 
++    def _maybe_blind_walk(
++        self, position: tuple[float, float], action: str,
++    ) -> OperationRoundResult | None:
++        """停车等转向僵持太久时盲走一小步，打破朝向抖动造成的原地僵持。
++
++        贴墙时朝向读数可能在两个解之间跳，目标差每轮反号，转向线程左右互抵，
++        位置一步不动，最后只能等点位 45 秒超时。这里在僵持超过
++        ``BLIND_WALK_SECONDS`` 且位移不足 ``BLIND_WALK_PROGRESS`` 时，
++        撤掉转向目标并按前进键 0.22 秒，让画面换个参照再判断。
++
++        Args:
++            position: 当前定位。
++            action: 步骤名前缀（慢步/短步），用于状态文字。
++
++        Returns:
++            盲走时返回本轮 ``round_wait`` 结果；还在观察期返回 None。
++        """
++        now = time.monotonic()
++        if self.blind_walk_since is None:
++            self.blind_walk_since = now
++            self.blind_walk_origin = position
++            return None
++        origin = self.blind_walk_origin or position
++        moved = hypot(position[0] - origin[0], position[1] - origin[1])
++        if moved >= BLIND_WALK_PROGRESS:
++            self.blind_walk_since = now
++            self.blind_walk_origin = position
++            self.blind_walk_tries = 0
++            return None
++        if now - self.blind_walk_since < BLIND_WALK_SECONDS:
++            return None
++        if self.blind_walk_tries >= BLIND_WALK_TRIES:
++            return None
++        self.blind_walk_tries += 1
++        self.blind_walk_since = now
++        self.blind_walk_origin = position
++        self.input_worker.submit_turn(None)
++        self._step_forward(BLIND_WALK_PRESS)
++        self._record_input()
++        log.info(
++            '贝果朝向读数不稳，盲走一小步（第 %s/%s 次，位置 (%.0f,%.0f)）',
++            self.blind_walk_tries, BLIND_WALK_TRIES, position[0], position[1],
++        )
++        return self.round_wait(
++            f'{action}盲走一小步（第 {self.blind_walk_tries}/{BLIND_WALK_TRIES} 次）',
++        )
++
+     def _cruise(
+         self, point: BagelRoutePoint, position: tuple[float, float],
+     ) -> OperationRoundResult:
+@@ -2327,6 +2533,9 @@ class BagelRouteWalker(BagelOperation):
+             # 大偏差：松键停车等转向线程转到位再走。
+             self.turning_in_place = True
+             self._release_forward()
++            blind = self._maybe_blind_walk(position, '')
++            if blind is not None:
++                return blind
+             return self.round_wait(f'停车等转向 {angle_diff:.0f}度')
+         self.turning_in_place = False
+         stuck = self._check_stuck(position, point, controller_angle)
+@@ -2543,6 +2752,9 @@ class BagelRouteWalker(BagelOperation):
+         if stop_turn:
+             # 大偏差：松键停车等转向线程转到位，不短按前进。
+             self._release_forward()
++            blind = self._maybe_blind_walk(position, action)
++            if blind is not None:
++                return blind
+             return self.round_wait(f'{action}停车等转向 {angle_diff:.0f}度')
+         self.turning_in_place = False
+         blocked = self._check_slow_stuck(position)
+diff --git a/stats.py b/stats.py
+index b25d23e..0c116a2 100644
+--- a/stats.py
++++ b/stats.py
+@@ -23,6 +23,8 @@ OUTCOME_EMPTY: str = '空箱'
+ OUTCOME_FAILED: str = '失败局'
+ OUTCOME_UNSUPPORTED: str = '非支持出生点'
+ OUTCOME_UNFINISHED: str = '未完成'
++OUTCOME_DEFEATED: str = '阵亡局'
++"""被怪打倒：不可控结果，不计入连续失败额度，但计入总局数与成功率分母。"""
+ 
+ QUALITY_RED: str = 'Z'
+ """红色品质；只有这一品质计入物品统计。"""
+@@ -250,7 +252,8 @@ class BagelRunStats:
+             return
+         counts = ' / '.join(
+             f'{name} {self.outcome_counts[name]}'
+-            for name in (OUTCOME_SUCCESS, OUTCOME_EMPTY, OUTCOME_FAILED, OUTCOME_UNSUPPORTED, OUTCOME_UNFINISHED)
++            for name in (OUTCOME_SUCCESS, OUTCOME_EMPTY, OUTCOME_FAILED, OUTCOME_DEFEATED,
++                         OUTCOME_UNSUPPORTED, OUTCOME_UNFINISHED)
+             if self.outcome_counts.get(name)
+         )
+         log.info('贝果收益统计：共 %s 局（%s）· 用时 %s', self.finished_rounds, counts, format_duration(self._elapsed()))
+@@ -272,6 +275,7 @@ class BagelRunStats:
+         lines.append(
+             f'成功 {self.outcome_counts.get(OUTCOME_SUCCESS, 0)} 局 · '
+             f'失败 {self.outcome_counts.get(OUTCOME_FAILED, 0)} 局 · '
++            f'阵亡 {self.outcome_counts.get(OUTCOME_DEFEATED, 0)} 局 · '
+             f'用时 {format_duration(self._elapsed())}'
+         )
+         lines.append(self._income_text())

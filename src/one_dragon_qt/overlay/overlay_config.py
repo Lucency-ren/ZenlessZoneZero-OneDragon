@@ -126,12 +126,12 @@ class OverlayConfig(YamlConfig):
 
     @property
     def hud_opacity(self) -> int:
-        """面板底色不透明度百分比，100 为纯黑不透明。"""
-        return max(10, min(100, int(self._overlay_data()["hud_opacity"])))
+        """面板底色不透明度百分比，0 完全透明只剩文字，100 为纯黑不透明。"""
+        return max(0, min(100, int(self._overlay_data()["hud_opacity"])))
 
     @hud_opacity.setter
     def hud_opacity(self, value: int) -> None:
-        self._update_overlay_data("hud_opacity", max(10, min(100, int(value))))
+        self._update_overlay_data("hud_opacity", max(0, min(100, int(value))))
 
     @property
     def hud_font_size(self) -> str:
