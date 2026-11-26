@@ -1,5 +1,5 @@
 diff --git a/app.py b/app.py
-index c025354..b456d41 100644
+index d263472..af39544 100644
 --- a/app.py
 +++ b/app.py
 @@ -10,6 +10,8 @@ from one_dragon.base.operation.operation_node import operation_node
@@ -49,7 +49,7 @@ index c025354..b456d41 100644
          self.route_failures: dict[str, int] = {}
          """各路线的连续失败局数，键为路线引用；只有该路线成功入仓才清零。"""
          self.failure_retry_pending: bool = False
-@@ -126,6 +145,8 @@ class BagelApp(ZApplication):
+@@ -128,6 +147,8 @@ class BagelApp(ZApplication):
          """本局的地图、出生点和执行的路线；没定位或没跑路线时为 None。"""
          self._route_rounds: int = 0
          """本次任务写入的路线数据记录局数；为 0 时不输出汇总表。"""
@@ -58,7 +58,7 @@ index c025354..b456d41 100644
          self._route_reported: bool = False
          self._card_in_safe: bool = False
          """开房卡模式：安全箱里是否还有没用掉的门禁卡。入场核对到 1 件时置真，刷开门或入仓后置假。"""
-@@ -218,7 +239,7 @@ class BagelApp(ZApplication):
+@@ -220,7 +241,7 @@ class BagelApp(ZApplication):
              return
          try:
              route = self._round_route
@@ -67,7 +67,7 @@ index c025354..b456d41 100644
                  ended_at=now_iso(),
                  instance=self.ctx.current_instance_idx,
                  map_id=self._round_map_id,
-@@ -231,7 +252,9 @@ class BagelApp(ZApplication):
+@@ -233,7 +254,9 @@ class BagelApp(ZApplication):
                  seconds=round(finished.seconds, 1),
                  income=finished.income,
                  red=stats.red_counts(finished.items),
@@ -78,7 +78,7 @@ index c025354..b456d41 100644
              self._route_rounds += 1
          except Exception:
              log.error('记录贝果路线数据失败', exc_info=True)
-@@ -248,6 +271,19 @@ class BagelApp(ZApplication):
+@@ -250,6 +273,19 @@ class BagelApp(ZApplication):
          except Exception:
              log.error('输出贝果路线数据汇总失败', exc_info=True)
  
@@ -98,7 +98,7 @@ index c025354..b456d41 100644
      def _push_summary(self, result: OperationResult) -> None:
          """任务结束推送收益摘要，按本应用的节点通知设置发送；用户手动停止不推送。
  
-@@ -255,8 +291,6 @@ class BagelApp(ZApplication):
+@@ -257,8 +293,6 @@ class BagelApp(ZApplication):
          所以在这里按节点通知的同一套规则发送：关闭不发，仅失败时只在异常停止时发，
          合并时放进通知池，由框架在应用结束时一起发出。
          """
@@ -107,7 +107,7 @@ index c025354..b456d41 100644
          if not self.ctx.notify_config.enable_notify or not self.ctx.run_context.is_app_need_notify(self.app_id):
              return
          mode = self.ctx.notify_config.get_app_detail_mode(self.app_id)
-@@ -266,11 +300,17 @@ class BagelApp(ZApplication):
+@@ -268,11 +302,17 @@ class BagelApp(ZApplication):
              return
          # 失败原因常带「；」后的细节，推送只取第一段。
          stop_reason = None if result.success else str(result.status).split('；')[0]
@@ -125,7 +125,7 @@ index c025354..b456d41 100644
          if mode == NotifyDetailMode.MERGE.value.value:
              self.ctx.run_context.notify_pool.add(content=content)
          else:
-@@ -300,7 +340,9 @@ class BagelApp(ZApplication):
+@@ -302,7 +342,9 @@ class BagelApp(ZApplication):
          self.rounds_since_sell = 0
          self.empty_rounds = 0
          self.defeat_rounds = 0
@@ -135,7 +135,7 @@ index c025354..b456d41 100644
          self.route_failures = {}
          self.failure_retry_pending = False
          self.failure_reason = None
-@@ -313,6 +355,7 @@ class BagelApp(ZApplication):
+@@ -315,6 +357,7 @@ class BagelApp(ZApplication):
          self._round_survey = 0
          self._reset_round_route()
          self._route_rounds = 0
@@ -143,7 +143,7 @@ index c025354..b456d41 100644
          self._route_reported = False
          self._card_in_safe = False
          self._round_card_swiped = False
-@@ -332,6 +375,21 @@ class BagelApp(ZApplication):
+@@ -334,6 +377,21 @@ class BagelApp(ZApplication):
          self._round_pickup_presses = 0
          self._round_needs_organize = False
  
@@ -165,7 +165,7 @@ index c025354..b456d41 100644
      def _count_round_failure(self) -> None:
          """失败局计入全局连续失败；已执行路线时同时计入该路线。"""
          self.consecutive_failures += 1
-@@ -342,6 +400,7 @@ class BagelApp(ZApplication):
+@@ -344,6 +402,7 @@ class BagelApp(ZApplication):
      def _clear_round_failures(self) -> None:
          """成功入仓清零全局计数和本局路线的计数；其他路线的计数保留。"""
          self.consecutive_failures = 0
@@ -173,7 +173,7 @@ index c025354..b456d41 100644
          if self._round_route is not None:
              self.route_failures.pop(str(self._round_route.ref), None)
  
-@@ -499,6 +558,17 @@ class BagelApp(ZApplication):
+@@ -505,6 +564,17 @@ class BagelApp(ZApplication):
              # 入场核对过安全箱正好 1 件，按带着门禁卡处理。
              self._card_in_safe = True
              self._buy_card_attempted = False
@@ -191,7 +191,7 @@ index c025354..b456d41 100644
          if retrying_failure and not result.success:
              return self._finish_failed_round(result, '额外入场')
          return self.round_by_op_result(result, wait=1)
-@@ -818,8 +888,17 @@ class BagelApp(ZApplication):
+@@ -824,8 +894,17 @@ class BagelApp(ZApplication):
              else previous.status if previous is not None else '局内失败'
          )
          release_flow_inputs(self.ctx)
@@ -211,7 +211,7 @@ index c025354..b456d41 100644
          self._record_round_income(read_hud=False)
          path = screenshot.save_screenshot(self.ctx, self.last_screenshot, 'BagelApp')
          self.failure_history.append({
-@@ -829,8 +908,9 @@ class BagelApp(ZApplication):
+@@ -835,8 +914,9 @@ class BagelApp(ZApplication):
              'route': str(self._round_route.ref) if self._round_route is not None else None,
              'route_failures': self._round_route_failures(),
          })
@@ -223,7 +223,7 @@ index c025354..b456d41 100644
          usage.log_screenshot(path)
          return self._finish_failed_round(BagelExit(self.ctx).execute(), '退出')
  
-@@ -892,8 +972,74 @@ class BagelApp(ZApplication):
+@@ -898,8 +978,74 @@ class BagelApp(ZApplication):
              return f'连续失败 {self.consecutive_failures} 局'
          if route is not None and self._round_route_failures() >= limit:
              return f'路线「{route.name}」连续失败 {self._round_route_failures()} 局'
@@ -298,7 +298,7 @@ index c025354..b456d41 100644
      @node_from(from_name='失败局结算仓库')
      @operation_node(name='判断连续失败次数', screenshot_before_round=False)
      def decide_defeat_rounds(self) -> OperationRoundResult:
-@@ -919,6 +1065,9 @@ class BagelApp(ZApplication):
+@@ -925,6 +1071,9 @@ class BagelApp(ZApplication):
                  return self.round_success(self.STATUS_CARDS_OUT)
              self.failure_retry_pending = True
              return self.round_success('继续入场')
@@ -559,7 +559,7 @@ index caf6f0d..816f89e 100644
              (self.auto_clean_switch, 'auto_clean_warehouse'),
              (self.clean_mode, 'clean_mode'),
 diff --git a/route/input_worker.py b/route/input_worker.py
-index 7bcece0..6a9a51d 100644
+index 73a9e75..5168e1e 100644
 --- a/route/input_worker.py
 +++ b/route/input_worker.py
 @@ -18,6 +18,7 @@
@@ -659,7 +659,7 @@ index 7bcece0..6a9a51d 100644
          self._outlier_streak: int = 0
          """连续落出当前可信校准值倍率带的样本计数。"""
          self._clamp_streak: int = 0
-@@ -378,6 +404,7 @@ class _TurnWorker:
+@@ -379,6 +405,7 @@ class _TurnWorker:
              self._peak_bins.clear()
              self._peak_key = None
              self._peak_count = 0
@@ -667,7 +667,7 @@ index 7bcece0..6a9a51d 100644
              self._outlier_streak = 0
              self._clamp_streak = 0
          self._wake.set()
-@@ -593,13 +620,20 @@ class _TurnWorker:
+@@ -601,13 +628,20 @@ class _TurnWorker:
          if delta * pending <= 0:
              return True
          sample = abs(delta) / abs(pending)
@@ -691,7 +691,7 @@ index 7bcece0..6a9a51d 100644
          with self._lock:
              if not (TURN_RATIO_MIN <= sample <= TURN_RATIO_MAX):
                  log.info(
-@@ -607,6 +641,15 @@ class _TurnWorker:
+@@ -615,6 +649,15 @@ class _TurnWorker:
                      sample, pending, delta,
                  )
                  return True
@@ -707,7 +707,7 @@ index 7bcece0..6a9a51d 100644
              trusted_ref = self._trust_initial_ratio or self.turn_samples >= TURN_CAP_TRUST_SAMPLES
              ref = self.turn_ratio
              if trusted_ref and ref > 0 and not (
-@@ -621,18 +664,17 @@ class _TurnWorker:
+@@ -629,18 +672,17 @@ class _TurnWorker:
                      return True
              else:
                  self._outlier_streak = 0
@@ -735,7 +735,7 @@ index 7bcece0..6a9a51d 100644
          )
          if TURN_RATIO_MIN * 1.2 <= ratio <= TURN_RATIO_MAX / 1.2:
              with self._lock:
-@@ -675,6 +717,15 @@ class TurnRatioMemory:
+@@ -683,6 +725,15 @@ class TurnRatioMemory:
          """
          if samples < TURN_HINT_MIN_SAMPLES or ratio <= 0:
              return
