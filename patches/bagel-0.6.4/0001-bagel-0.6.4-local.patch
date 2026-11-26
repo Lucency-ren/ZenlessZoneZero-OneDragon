@@ -659,7 +659,7 @@ index 1f087f0..85fe8ad 100644
              raise ValueError('blueprint_priority 必须是布尔值')
          if type(self.auto_clean_warehouse) is not bool:
 diff --git a/defs.py b/defs.py
-index bc850a1..790b1f5 100644
+index aa07745..41d5e13 100644
 --- a/defs.py
 +++ b/defs.py
 @@ -96,3 +96,7 @@ MODE_DIFFICULTIES: dict[str, tuple[str, ...]] = {MODE_RUN: DIFFICULTIES, MODE_KE
@@ -671,19 +671,19 @@ index bc850a1..790b1f5 100644
 +KEYCARD_CARRY_MAX: int = 5
 +KEYCARD_CARRY_DEFAULT: int = 3
 diff --git a/gui/route_web_editor.py b/gui/route_web_editor.py
-index 85dd162..a151c16 100644
+index 48a0079..bbad90b 100644
 --- a/gui/route_web_editor.py
 +++ b/gui/route_web_editor.py
-@@ -175,6 +175,8 @@ class BagelRouteEditor(QDialog):
+@@ -178,6 +178,8 @@ class BagelRouteEditor(QDialog):
          self._locate_index: int = -1
          """正在定位替换的点序号；-1 表示没有进行中的定位。"""
          self.run_overlay: BagelRunOverlay | None = None
 +        self._overlay_opacity: int = 70
 +        """运行悬浮窗底色不透明度百分比，由设置页传入。"""
          self._page_ready: bool = False
-         self._close_confirmed: bool = False
-         """网页已确认没有未保存修改，可以真正关闭。"""
-@@ -678,6 +680,7 @@ class BagelRouteEditor(QDialog):
+         self._render_terminated: bool = False
+         """网页渲染进程已退出；之后的载入失败不再覆盖退出提示。"""
+@@ -741,6 +743,7 @@ class BagelRouteEditor(QDialog):
              return
          if self.run_overlay is None:
              self.run_overlay = BagelRunOverlay()
@@ -691,7 +691,7 @@ index 85dd162..a151c16 100644
          if not self._run_overlay_timer.isActive():
              self._run_overlay_timer.start()
          from .route_test_thread import decision_lines
-@@ -697,6 +700,17 @@ class BagelRouteEditor(QDialog):
+@@ -760,6 +763,17 @@ class BagelRouteEditor(QDialog):
          )
          self.run_overlay.show()
  
@@ -1326,7 +1326,7 @@ index ede25a2..ecff90f 100644
              return self.round_fail('没有该房间门禁卡的图标模板，无法按保留张数清点')
          return self.round_success()
 diff --git a/route/input_worker.py b/route/input_worker.py
-index 73a9e75..5168e1e 100644
+index 4f13176..0db633b 100644
 --- a/route/input_worker.py
 +++ b/route/input_worker.py
 @@ -18,6 +18,7 @@
@@ -1337,7 +1337,7 @@ index 73a9e75..5168e1e 100644
  import threading
  import time
  from collections import deque
-@@ -92,8 +93,11 @@ TURN_TARGET_FRESH_SECONDS: float = 1.0
+@@ -95,8 +96,11 @@ TURN_TARGET_FRESH_SECONDS: float = 1.0
  远小于这个值，不影响。"""
  
  TURN_RATIO_MIN: float = 0.2
@@ -1351,7 +1351,7 @@ index 73a9e75..5168e1e 100644
  
  STOP_TURN_CAP: float = 180.0
  """停车转的单次上限（度）：偏差多大就一把转到位，最大 180 度（掉头）。"""
-@@ -120,7 +124,19 @@ TURN_PREEMPT_ANGLE: float = 45.0
+@@ -123,7 +127,19 @@ TURN_PREEMPT_ANGLE: float = 45.0
  """新目标与当前稳定朝向差达到此值时，宽限过后不再等 1 秒静止超时，直接放行大转向。"""
  
  TURN_RATIO_PEAK_BIN_WIDTH: float = 0.05
@@ -1372,7 +1372,7 @@ index 73a9e75..5168e1e 100644
  
  TURN_RATIO_PRIOR_WEIGHT: int = 3
  """跨局可信起步值在峰值箱中的先验票数：防止开局首样本或 2 个受击噪声样本直接劫持本局比例。"""
-@@ -128,8 +144,10 @@ TURN_RATIO_PRIOR_WEIGHT: int = 3
+@@ -131,8 +147,10 @@ TURN_RATIO_PRIOR_WEIGHT: int = 3
  TURN_RATIO_OUTLIER_FACTOR: float = 1.4
  """已有可信基准时，单次样本相对当前校准值的正常倍率带（[ratio/它, ratio*它]）；超出视为受击或背景干扰。"""
  
@@ -1385,7 +1385,7 @@ index 73a9e75..5168e1e 100644
  
  TURN_RATIO_CLAMP_WARN_STREAK: int = 5
  """校准值连续这么多个样本贴着可信区间的边界，就提示可能需要重做灵敏度检测。"""
-@@ -153,15 +171,19 @@ TURN_STILL_TIMEOUT: float = 1.0
+@@ -156,15 +174,19 @@ TURN_STILL_TIMEOUT: float = 1.0
  下发后 0.4 + 1.0 秒还没动静，继续等只会饿死后续转向，所以消费掉
  这一笔让下一笔能转。校准值本身任何时候都不重置，只靠正常样本平滑收敛。"""
  
@@ -1408,7 +1408,7 @@ index 73a9e75..5168e1e 100644
  TURN_DX_WARN_RATIO: float = 1.3
  """本局比例超出 [1/它, 它] 算明显偏离：turn_dx 与游戏灵敏度可能不符。
  
-@@ -323,12 +345,16 @@ class _TurnWorker:
+@@ -393,12 +415,16 @@ class _TurnWorker:
          self._peak_key: int | None = None
          """当前最高的槽号；不如它就保持不变。"""
          self._peak_count: int = 0
@@ -1426,7 +1426,7 @@ index 73a9e75..5168e1e 100644
          self._outlier_streak: int = 0
          """连续落出当前可信校准值倍率带的样本计数。"""
          self._clamp_streak: int = 0
-@@ -379,6 +405,7 @@ class _TurnWorker:
+@@ -474,6 +500,7 @@ class _TurnWorker:
              self._peak_bins.clear()
              self._peak_key = None
              self._peak_count = 0
@@ -1434,7 +1434,7 @@ index 73a9e75..5168e1e 100644
              self._outlier_streak = 0
              self._clamp_streak = 0
          self._wake.set()
-@@ -601,13 +628,20 @@ class _TurnWorker:
+@@ -736,13 +763,20 @@ class _TurnWorker:
          if delta * pending <= 0:
              return True
          sample = abs(delta) / abs(pending)
@@ -1458,7 +1458,7 @@ index 73a9e75..5168e1e 100644
          with self._lock:
              if not (TURN_RATIO_MIN <= sample <= TURN_RATIO_MAX):
                  log.info(
-@@ -615,6 +649,15 @@ class _TurnWorker:
+@@ -750,6 +784,15 @@ class _TurnWorker:
                      sample, pending, delta,
                  )
                  return True
@@ -1474,7 +1474,7 @@ index 73a9e75..5168e1e 100644
              trusted_ref = self._trust_initial_ratio or self.turn_samples >= TURN_CAP_TRUST_SAMPLES
              ref = self.turn_ratio
              if trusted_ref and ref > 0 and not (
-@@ -629,18 +672,17 @@ class _TurnWorker:
+@@ -764,18 +807,17 @@ class _TurnWorker:
                      return True
              else:
                  self._outlier_streak = 0
@@ -1502,7 +1502,7 @@ index 73a9e75..5168e1e 100644
          )
          if TURN_RATIO_MIN * 1.2 <= ratio <= TURN_RATIO_MAX / 1.2:
              with self._lock:
-@@ -683,6 +725,15 @@ class TurnRatioMemory:
+@@ -818,6 +860,15 @@ class TurnRatioMemory:
          """
          if samples < TURN_HINT_MIN_SAMPLES or ratio <= 0:
              return
@@ -1631,7 +1631,7 @@ index 2d2fa8c..28a616f 100644
      """按地图、出生点生成汇总表，每行一条日志。
  
 diff --git a/route/route_walker.py b/route/route_walker.py
-index 4870edb..7ccbc1c 100644
+index 17519cf..c282444 100644
 --- a/route/route_walker.py
 +++ b/route/route_walker.py
 @@ -19,6 +19,7 @@
@@ -1642,7 +1642,7 @@ index 4870edb..7ccbc1c 100644
  import re
  import time
  from math import atan2, cos, degrees, hypot, radians, sin
-@@ -174,13 +175,30 @@ NEAR_STOP_TURN_ANGLE: float = 60.0
+@@ -176,13 +177,30 @@ NEAR_STOP_TURN_ANGLE: float = 60.0
  BOX_SMALL_STEP_RADIUS: float = 3.0
  """箱子碎步半径：进到它以内用碎步（用户给定 3px）。"""
  
@@ -1674,7 +1674,7 @@ index 4870edb..7ccbc1c 100644
  BOX_WAIT_RADIUS: float = 1.9
  """箱子原地等待半径：距离小于 1.9px 就停步原地等提示（用户给定）。
  
-@@ -224,6 +242,27 @@ SMALL_STEP_PRESS: float = 0.10
+@@ -226,6 +244,27 @@ SMALL_STEP_PRESS: float = 0.10
  实测按 0.05、0.08 秒每步都约 0.4px，0.12 秒约 0.8px；0.10 秒落在两档之间，
  尚未单独标定，按线性推算约 0.6px。"""
  
@@ -1702,7 +1702,7 @@ index 4870edb..7ccbc1c 100644
  STEP_REST_POLL: float = 0.03
  """停顿期间主线的轮询上限（秒）：停顿结束后最多晚这么久拍到决策帧。"""
  
-@@ -486,6 +525,46 @@ def _closest_on_segment(
+@@ -488,6 +527,46 @@ def _closest_on_segment(
      return (start.x + t * dx, start.y + t * dy)
  
  
@@ -1749,7 +1749,7 @@ index 4870edb..7ccbc1c 100644
  class BagelRouteWalker(BagelOperation):
      """按打点顺序执行路线，箱类按类型交互。"""
  
-@@ -493,6 +572,13 @@ class BagelRouteWalker(BagelOperation):
+@@ -495,6 +574,13 @@ class BagelRouteWalker(BagelOperation):
      STATUS_SPAWN_FAILED: str = '出生点识别失败'
      STATUS_CONFIG_INVALID: str = '路线配置无效'
      STATUS_NOT_FOREGROUND: str = '游戏不在前台，已停止'
@@ -1763,7 +1763,7 @@ index 4870edb..7ccbc1c 100644
      STATUS_DONE: str = '路线走完'
      STATUS_KEYCARD_MISSING: str = '刷卡处显示没有对应门禁卡'
      STATUS_FAIL_SURVEY: str = '失败前补读调查收益'
-@@ -500,9 +586,12 @@ class BagelRouteWalker(BagelOperation):
+@@ -502,9 +588,12 @@ class BagelRouteWalker(BagelOperation):
      def __init__(
          self, ctx: ZContext, blueprint_priority: bool = True,
          route_ref: BagelRouteRef | None = None, keycard_room: str | None = None,
@@ -1776,7 +1776,7 @@ index 4870edb..7ccbc1c 100644
      ) -> None:
          """加载出生点清单并准备定位。
  
-@@ -518,6 +607,9 @@ class BagelRouteWalker(BagelOperation):
+@@ -520,6 +609,9 @@ class BagelRouteWalker(BagelOperation):
                  局末由 remember_turn_ratio 记回。None 表示从 1.0 起步、局末不记。
              organize_backpack: 是否允许在路线最后一个容器的搜查面板内就地整理背包；
                  正式应用传入 True，路线试跑默认 False。
@@ -1786,7 +1786,7 @@ index 4870edb..7ccbc1c 100644
              map_layers: 调用方已加载的只读地图层，多局共用；None 表示本执行器自己加载。
                  每层约 6 MiB，23 层合计约 135 MiB，逐局加载会让内存随局数上涨。
  
-@@ -528,7 +620,18 @@ class BagelRouteWalker(BagelOperation):
+@@ -530,7 +622,18 @@ class BagelRouteWalker(BagelOperation):
          # 而它的回调闭包引用执行器自身，执行器结束后要等完整垃圾回收才能释放。
          super().__init__(ctx, op_name='贝果-路线执行', timeout_seconds=-1, need_check_game_win=False)
          self.store: BagelRouteStore = BagelRouteStore(self.ctx)
@@ -1805,7 +1805,7 @@ index 4870edb..7ccbc1c 100644
          """正式运行开房卡模式的目标房间；跑刀与试跑为 None。"""
          try:
              self.spawns: list[BagelSpawnPoint] = self.store.load_spawns()
-@@ -555,6 +658,10 @@ class BagelRouteWalker(BagelOperation):
+@@ -557,6 +660,10 @@ class BagelRouteWalker(BagelOperation):
          self.spawn_streak: int = 0
          """连续得出相同出生点结论的新截图次数。"""
          self.blueprint_priority: bool = blueprint_priority
@@ -1816,7 +1816,7 @@ index 4870edb..7ccbc1c 100644
          self.locator: MultiMapLocator = MultiMapLocator(
              load_map_locators() if map_layers is None else map_layers,
          )
-@@ -680,6 +787,18 @@ class BagelRouteWalker(BagelOperation):
+@@ -682,6 +789,18 @@ class BagelRouteWalker(BagelOperation):
          """当前是否在冲刺。"""
          self.turning_in_place: bool = False
          """巡航中是否已进入停车等转向；用于 ``WALK_STOP_TURN_ANGLE`` 与 ``WALK_TURN_ANGLE`` 滞回判断。"""
@@ -1835,7 +1835,7 @@ index 4870edb..7ccbc1c 100644
          self.last_dodge_at: float | None = None
          """上次点闪避的时刻（monotonic），用于冲刺点闪避的间隔控制。"""
          self.turn_memory: TurnRatioMemory | None = turn_memory
-@@ -755,8 +874,23 @@ class BagelRouteWalker(BagelOperation):
+@@ -762,8 +881,23 @@ class BagelRouteWalker(BagelOperation):
          self.perf.start()
          if not self._game_in_foreground():
              self._release_forward()
@@ -1859,7 +1859,7 @@ index 4870edb..7ccbc1c 100644
          result = super()._execute_one_round()
          node_name = '未知' if self._current_node is None else self._current_node.cn
          status = result.status or result.status_display or ''
-@@ -823,12 +957,33 @@ class BagelRouteWalker(BagelOperation):
+@@ -836,12 +970,33 @@ class BagelRouteWalker(BagelOperation):
              return super()._has(area, screen_name)
  
      def _game_in_foreground(self) -> bool:
@@ -1896,7 +1896,7 @@ index 4870edb..7ccbc1c 100644
  
      # ---------- 定位 ----------
  
-@@ -865,7 +1020,53 @@ class BagelRouteWalker(BagelOperation):
+@@ -875,7 +1030,53 @@ class BagelRouteWalker(BagelOperation):
          """
          with self.perf.measure('朝向'):
              _marker_vertices, _marker_edges, sector, _radius, _center = analyze(self.minimap())
@@ -1951,7 +1951,7 @@ index 4870edb..7ccbc1c 100644
  
      # ---------- 节点 ----------
  
-@@ -938,14 +1139,22 @@ class BagelRouteWalker(BagelOperation):
+@@ -948,14 +1149,22 @@ class BagelRouteWalker(BagelOperation):
                      self.STATUS_SPAWN_FAILED,
                      data=f'角色在{spawn.name}，路线「{route.name}」绑定的是{bound}',
                  )
@@ -1981,7 +1981,7 @@ index 4870edb..7ccbc1c 100644
                  return self.round_fail(self.STATUS_ANCHOR_MISS)
          else:
              try:
-@@ -1668,6 +1877,10 @@ class BagelRouteWalker(BagelOperation):
+@@ -1678,6 +1887,10 @@ class BagelRouteWalker(BagelOperation):
              self.pickup_text = None
              self.pickup_taps = 0
              return False
@@ -1992,7 +1992,7 @@ index 4870edb..7ccbc1c 100644
          return True
  
      def _tap_pickup(self, text: str) -> None:
-@@ -1865,6 +2078,9 @@ class BagelRouteWalker(BagelOperation):
+@@ -1875,6 +2088,9 @@ class BagelRouteWalker(BagelOperation):
      @operation_node(name='拾取剩余')
      def pick_all_rest(self) -> OperationRoundResult:
          """用新截图确认搜查面板有剩余物品且可拾取，点按 F 并轮询结果格清空。"""
@@ -2002,7 +2002,7 @@ index 4870edb..7ccbc1c 100644
          now = time.monotonic()
          if self._pick_all_sent_at is not None:
              elapsed = now - self._pick_all_sent_at
-@@ -2062,8 +2278,9 @@ class BagelRouteWalker(BagelOperation):
+@@ -2072,8 +2288,9 @@ class BagelRouteWalker(BagelOperation):
              self.electronic_small_steps = True
              self._release_forward()
              log.info(
@@ -2014,7 +2014,7 @@ index 4870edb..7ccbc1c 100644
              )
          if self.last_input_frame is not None and self.last_screenshot_time <= self.last_input_frame:
              return self.round_wait('等待动作后的新截图', wait=0.05)
-@@ -2097,6 +2314,18 @@ class BagelRouteWalker(BagelOperation):
+@@ -2107,6 +2324,18 @@ class BagelRouteWalker(BagelOperation):
          prompt = self._prompt_stop(distance)
          if prompt is not None:
              return prompt
@@ -2033,7 +2033,7 @@ index 4870edb..7ccbc1c 100644
          if point.kind == KEYCARD_DOOR and self.card_probe_step is not None:
              # 试探中不再按坐标逼近，否则会被拉回门板正中，试探白做。
              return self._probe_card_reader()
-@@ -2298,6 +2527,53 @@ class BagelRouteWalker(BagelOperation):
+@@ -2308,6 +2537,53 @@ class BagelRouteWalker(BagelOperation):
          self.input_worker.submit_turn(None)
          return self.round_wait(f'未识别到朝向，停下等待（{missed:.1f}s）', wait=0.1)
  
@@ -2087,7 +2087,7 @@ index 4870edb..7ccbc1c 100644
      def _cruise(
          self, point: BagelRoutePoint, position: tuple[float, float],
      ) -> OperationRoundResult:
-@@ -2327,6 +2603,9 @@ class BagelRouteWalker(BagelOperation):
+@@ -2337,6 +2613,9 @@ class BagelRouteWalker(BagelOperation):
              # 大偏差：松键停车等转向线程转到位再走。
              self.turning_in_place = True
              self._release_forward()
@@ -2097,7 +2097,7 @@ index 4870edb..7ccbc1c 100644
              return self.round_wait(f'停车等转向 {angle_diff:.0f}度')
          self.turning_in_place = False
          stuck = self._check_stuck(position, point, controller_angle)
-@@ -2453,7 +2732,7 @@ class BagelRouteWalker(BagelOperation):
+@@ -2471,7 +2750,7 @@ class BagelRouteWalker(BagelOperation):
              return self.round_wait('前进停顿中', wait=min(remaining, STEP_REST_POLL))
          return None
  
@@ -2106,7 +2106,7 @@ index 4870edb..7ccbc1c 100644
          """近距离移动：不停下来对准，直接短按前进。
  
          3px 内不再转向：这么近的距离，目标方向完全由 1px 级的坐标抖动
-@@ -2462,6 +2741,10 @@ class BagelRouteWalker(BagelOperation):
+@@ -2480,6 +2759,10 @@ class BagelRouteWalker(BagelOperation):
  
          方向真的偏了也不怕：走一步后距离变大，自然回到慢步分支去对准。
          超时由调用方 _check_small_step_timeout 管，这里只负责迈步。
@@ -2117,7 +2117,7 @@ index 4870edb..7ccbc1c 100644
          """
          ready = self._prepare_forward_step()
          if ready is not None:
-@@ -2469,10 +2752,13 @@ class BagelRouteWalker(BagelOperation):
+@@ -2487,10 +2770,13 @@ class BagelRouteWalker(BagelOperation):
          limited = self._fail_if_action_limit()
          if limited is not None:
              return limited
@@ -2133,7 +2133,7 @@ index 4870edb..7ccbc1c 100644
  
      def _check_small_step_timeout(self) -> OperationRoundResult | None:
          """碎步段超时检查：3px 内迈步超过 5 秒还没贴到就跳过这个点（房卡门判失败）。
-@@ -2543,6 +2829,9 @@ class BagelRouteWalker(BagelOperation):
+@@ -2561,6 +2847,9 @@ class BagelRouteWalker(BagelOperation):
          if stop_turn:
              # 大偏差：松键停车等转向线程转到位，不短按前进。
              self._release_forward()
