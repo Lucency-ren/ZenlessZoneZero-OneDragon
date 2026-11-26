@@ -1,6 +1,6 @@
-# 贝果插件本地补丁（bagel 0.6.3）
+# 贝果插件本地补丁（bagel 0.6.4）
 
-这组补丁修的是「贝果计划」插件在 0.6.3 上跑起来会踩到的几个坑。插件目录
+这组补丁修的是「贝果计划」插件在 0.6.4 上跑起来会踩到的几个坑。插件目录
 `plugins/bagel` 被 `.gitignore` 排除、而且插件市场会在启动时覆盖它，所以补丁
 以 diff 形式存在这里，插件升级后重新 apply 一次即可。
 
@@ -39,8 +39,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File patches\apply-bagel-patches.
 
 ```powershell
 cd plugins\bagel
-D:\Git\usr\bin\patch.exe -p1 --dry-run --reverse --input=..\..\patches\bagel-0.6.3\0001-bagel-0.6.3-local.patch
-D:\Git\usr\bin\patch.exe -p1                    --input=..\..\patches\bagel-0.6.3\0001-bagel-0.6.3-local.patch
+D:\Git\usr\bin\patch.exe -p1 --dry-run --reverse --input=..\..\patches\bagel-0.6.4\0001-bagel-0.6.4-local.patch
+D:\Git\usr\bin\patch.exe -p1                    --input=..\..\patches\bagel-0.6.4\0001-bagel-0.6.4-local.patch
 ```
 
 `--reverse --dry-run` 返回 0 表示补丁与当前目录完全一致（已经打过了）。
