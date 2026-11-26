@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Re-apply local bagel plugin patches after a plugin upgrade.
 
@@ -17,7 +17,18 @@ param(
 
 $ErrorActionPreference = 'Continue'
 # plugins/ is gitignored, git apply silently skips it, so use GNU patch instead.
-$patchExe = 'D:\Git\usr\bin\patch.exe'
+# Prefer patch.exe on PATH (Git for Windows, MSYS2, ...), fall back to the usual Git install.
+$patchCmd = Get-Command patch.exe -CommandType Application -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+if ($patchCmd) {
+    $patchExe = $patchCmd.Source
+}
+elseif (Test-Path 'D:\Git\usr\bin\patch.exe') {
+    $patchExe = 'D:\Git\usr\bin\patch.exe'
+}
+else {
+    throw 'GNU patch not found: install Git for Windows (patch.exe under usr\bin) or put patch.exe on PATH'
+}
 
 # $scriptRoot is not reliable inside param defaults on PowerShell 5.1, so resolve it here.
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -95,18 +106,10 @@ if ($Check) {
 
 $python = Join-Path $Instance '.venv\Scripts\python.exe'
 if (Test-Path $python) {
-    $targets = @(
-        (Join-Path $PluginDir 'app.py'),
-        (Join-Path $PluginDir 'config.py'),
-        (Join-Path $PluginDir 'stats.py'),
-        (Join-Path $PluginDir 'gui\run_overlay.py'),
-        (Join-Path $PluginDir 'gui\setting_interface.py'),
-        (Join-Path $PluginDir 'gui\route_web_editor.py'),
-        (Join-Path $PluginDir 'route\input_worker.py'),
-        (Join-Path $PluginDir 'route\route_recorder.py'),
-        (Join-Path $PluginDir 'route\route_stats.py'),
-        (Join-Path $PluginDir 'route\route_walker.py')
-    )
+    # Compile every plugin module: a broken decorator inside operation\*.py only shows up
+    # at runtime otherwise.
+    $targets = Get-ChildItem -LiteralPath $PluginDir -Recurse -Filter *.py -File |
+        ForEach-Object { $_.FullName }
     & $python -X utf8 -c "import py_compile,sys; [py_compile.compile(p, doraise=True) for p in sys.argv[1:]]; print('compile ok')" @targets
     if ($LASTEXITCODE -ne 0) {
         Write-Host 'compile failed'
