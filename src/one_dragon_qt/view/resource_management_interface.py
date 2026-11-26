@@ -25,7 +25,7 @@ from one_dragon.base.web.common_downloader import CommonDownloaderParam
 from one_dragon.base.web.zip_downloader import ZipDownloader
 from one_dragon.envs.env_config import ProxyTypeEnum
 from one_dragon.envs.git_service import GitLog, GitSyncStatus
-from one_dragon.envs.repo_config import ModelResourceDefinition
+from one_dragon.envs.repo_config import ModelResourceDefinition, RepoConfig
 from one_dragon.envs.update_service import LauncherType
 from one_dragon.utils.app_utils import start_one_dragon
 from one_dragon.utils.i18_utils import gt
@@ -47,6 +47,9 @@ from one_dragon_qt.widgets.resource_download_dialog import (
 )
 from one_dragon_qt.widgets.setting_card.combo_box_setting_card import (
     ComboBoxSettingCard,
+)
+from one_dragon_qt.widgets.setting_card.editable_combo_box_setting_card import (
+    EditableComboBoxSettingCard,
 )
 from one_dragon_qt.widgets.setting_card.expand_setting_card_group import (
     ExpandSettingCardGroup,
@@ -95,6 +98,33 @@ class OcrReloadRunner(QThread):
             self.ctx.init_ocr()
         except Exception:
             log.error('后台重新加载 OCR 模型失败', exc_info=True)
+
+
+class RepositoryUrlSettingCard(EditableComboBoxSettingCard):
+    """代码源卡片：下拉里是预设源，输入框里可以直接手填自己的仓库地址。"""
+
+    def setValue(self, value: object, emit_signal: bool = True) -> None:
+        super().setValue(value, emit_signal)
+        self._sync_url_text(value)
+
+    def _sync_url_text(self, value: object) -> None:
+        """下拉里有这个值就显示它的标题 没有就把地址直接显示到输入框。"""
+        if not isinstance(value, str) or not value:
+            return
+        text = value
+        index = self.combo_box.findData(value)
+        if 0 <= index < len(self._opts_list):
+            text = self._opts_list[index].ui_text
+        self.combo_box.blockSignals(True)
+        self.combo_box.setText(text)
+        self.combo_box.blockSignals(False)
+
+    def current_url(self) -> str:
+        """读取输入框里的原始文本。"""
+        text = self.combo_box.text()
+        if text is None:
+            return ''
+        return str(text).strip()
 
 
 class ResourceManagementInterface(VerticalScrollInterface):
@@ -156,13 +186,18 @@ class ResourceManagementInterface(VerticalScrollInterface):
             self.settings_button,
             alignment=Qt.AlignmentFlag.AlignRight,
         )
-        self.repository_url_opt = ComboBoxSettingCard(
+        self.repository_url_opt = RepositoryUrlSettingCard(
             icon=FluentIcon.APPLICATION,
             title='代码源',
-            content='自动模式优先使用上次成功源',
+            content='可选预设源，也可以直接填自己的仓库地址',
             options_list=self.ctx.repo_config.repository_options,
+            input_placeholder=gt('填自己的仓库地址 如 https://github.com/用户/仓库.git'),
+            tooltip=gt('直接填写仓库地址后回车即生效；填自己的仓库后 同步会从这个仓库拉取代码'),
         )
         self.repository_url_opt.value_changed.connect(lambda: self.ctx.git_service.update_remote())
+        self.repository_url_opt.combo_box.editingFinished.connect(
+            self._on_repository_url_edited
+        )
 
         self.git_branch_opt = ComboBoxSettingCard(
             icon=FluentIcon.GITHUB,
@@ -660,6 +695,8 @@ class ResourceManagementInterface(VerticalScrollInterface):
 
     def _start_code_sync(self) -> None:
         """从摘要卡片开始代码同步。"""
+        # 输入框里的代码源还没回车提交时 这里补一次 避免同步到旧的代码源
+        self._on_repository_url_edited()
         self._update_code_header(gt('同步中'))
         self.code_card.start_progress()
 
@@ -800,6 +837,35 @@ class ResourceManagementInterface(VerticalScrollInterface):
             fallback = self.ctx.repo_config.primary_branch
         self.ctx.env_config.git_branch = text if text else str(fallback)
         self.code_card.check_and_update_display()
+
+    def _on_repository_url_edited(self) -> None:
+        """保存手填的代码源地址，并同步更新远程仓库。"""
+        text = self.repository_url_opt.current_url()
+        if not text:
+            return
+
+        current = self.ctx.env_config.repository_url
+        preset_values = {str(item.value) for item in self.ctx.repo_config.repository_options}
+        preset_labels = {item.ui_text: str(item.value) for item in self.ctx.repo_config.repository_options}
+
+        if text in preset_values:
+            target = text
+        elif text in preset_labels:
+            target = preset_labels[text]
+        else:
+            normalized = RepoConfig.normalize_repository_url(text)
+            if normalized is None:
+                log.warning(f'代码源必须是 HTTPS 仓库地址，已忽略: {text}')
+                self.repository_url_opt.setValue(current, emit_signal=False)
+                return
+            target = normalized
+
+        if target == current:
+            return
+
+        self.ctx.env_config.repository_url = target
+        log.info(f'代码源已更新为: {target}')
+        self.ctx.git_service.update_remote()
 
     def _show_dialog_after_code_updated(self, success: bool) -> None:
         """仅在代码实际更新后显示重启对话框。"""
