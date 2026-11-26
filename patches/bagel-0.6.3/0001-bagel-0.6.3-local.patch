@@ -1,5 +1,5 @@
 diff --git a/app.py b/app.py
-index d263472..af39544 100644
+index d263472..8afd1e5 100644
 --- a/app.py
 +++ b/app.py
 @@ -10,6 +10,8 @@ from one_dragon.base.operation.operation_node import operation_node
@@ -19,7 +19,7 @@ index d263472..af39544 100644
      is_bagel_result,
      release_flow_inputs,
  )
-@@ -58,6 +61,18 @@ if TYPE_CHECKING:
+@@ -58,6 +61,22 @@ if TYPE_CHECKING:
      from .run_record import BagelRunRecord
      from .stats import BagelRound
  
@@ -29,16 +29,20 @@ index d263472..af39544 100644
 +    '入场确认持续未消失',
 +    '无法确认零投资',
 +    '未核对',
++    # 加载长时间没完成时节点会给出「执行超时」，同样只能靠重开游戏自愈。
++    '执行超时',
++    '等待加载超时',
++    '入场加载超时',
 +)
 +"""入场卡住的状态文案片段：命中就关游戏重开再入场，不再直接停机。"""
 +
-+_ENTER_STALL_RETRIES: int = 2
++_ENTER_STALL_RETRIES: int = 3
 +"""同一次任务里入场卡住最多重开游戏几次；用尽后按原逻辑停止并保留现场。"""
 +
  
  def collect_round_garbage() -> None:
      """局间做一次完整垃圾回收，释放上一局留在循环引用里的截图和操作。
-@@ -100,6 +115,10 @@ class BagelApp(ZApplication):
+@@ -100,6 +119,10 @@ class BagelApp(ZApplication):
          self.defeat_rounds: int = 0
          self.consecutive_failures: int = 0
          """全局连续失败局数；任一局成功入仓后清零。"""
@@ -49,7 +53,7 @@ index d263472..af39544 100644
          self.route_failures: dict[str, int] = {}
          """各路线的连续失败局数，键为路线引用；只有该路线成功入仓才清零。"""
          self.failure_retry_pending: bool = False
-@@ -128,6 +147,8 @@ class BagelApp(ZApplication):
+@@ -128,6 +151,8 @@ class BagelApp(ZApplication):
          """本局的地图、出生点和执行的路线；没定位或没跑路线时为 None。"""
          self._route_rounds: int = 0
          """本次任务写入的路线数据记录局数；为 0 时不输出汇总表。"""
@@ -58,7 +62,7 @@ index d263472..af39544 100644
          self._route_reported: bool = False
          self._card_in_safe: bool = False
          """开房卡模式：安全箱里是否还有没用掉的门禁卡。入场核对到 1 件时置真，刷开门或入仓后置假。"""
-@@ -220,7 +241,7 @@ class BagelApp(ZApplication):
+@@ -220,7 +245,7 @@ class BagelApp(ZApplication):
              return
          try:
              route = self._round_route
@@ -67,7 +71,7 @@ index d263472..af39544 100644
                  ended_at=now_iso(),
                  instance=self.ctx.current_instance_idx,
                  map_id=self._round_map_id,
-@@ -233,7 +254,9 @@ class BagelApp(ZApplication):
+@@ -233,7 +258,9 @@ class BagelApp(ZApplication):
                  seconds=round(finished.seconds, 1),
                  income=finished.income,
                  red=stats.red_counts(finished.items),
@@ -78,7 +82,7 @@ index d263472..af39544 100644
              self._route_rounds += 1
          except Exception:
              log.error('记录贝果路线数据失败', exc_info=True)
-@@ -250,6 +273,19 @@ class BagelApp(ZApplication):
+@@ -250,6 +277,19 @@ class BagelApp(ZApplication):
          except Exception:
              log.error('输出贝果路线数据汇总失败', exc_info=True)
  
@@ -98,7 +102,7 @@ index d263472..af39544 100644
      def _push_summary(self, result: OperationResult) -> None:
          """任务结束推送收益摘要，按本应用的节点通知设置发送；用户手动停止不推送。
  
-@@ -257,8 +293,6 @@ class BagelApp(ZApplication):
+@@ -257,8 +297,6 @@ class BagelApp(ZApplication):
          所以在这里按节点通知的同一套规则发送：关闭不发，仅失败时只在异常停止时发，
          合并时放进通知池，由框架在应用结束时一起发出。
          """
@@ -107,7 +111,7 @@ index d263472..af39544 100644
          if not self.ctx.notify_config.enable_notify or not self.ctx.run_context.is_app_need_notify(self.app_id):
              return
          mode = self.ctx.notify_config.get_app_detail_mode(self.app_id)
-@@ -268,11 +302,17 @@ class BagelApp(ZApplication):
+@@ -268,11 +306,17 @@ class BagelApp(ZApplication):
              return
          # 失败原因常带「；」后的细节，推送只取第一段。
          stop_reason = None if result.success else str(result.status).split('；')[0]
@@ -125,7 +129,7 @@ index d263472..af39544 100644
          if mode == NotifyDetailMode.MERGE.value.value:
              self.ctx.run_context.notify_pool.add(content=content)
          else:
-@@ -302,7 +342,9 @@ class BagelApp(ZApplication):
+@@ -302,7 +346,9 @@ class BagelApp(ZApplication):
          self.rounds_since_sell = 0
          self.empty_rounds = 0
          self.defeat_rounds = 0
@@ -135,7 +139,7 @@ index d263472..af39544 100644
          self.route_failures = {}
          self.failure_retry_pending = False
          self.failure_reason = None
-@@ -315,6 +357,7 @@ class BagelApp(ZApplication):
+@@ -315,6 +361,7 @@ class BagelApp(ZApplication):
          self._round_survey = 0
          self._reset_round_route()
          self._route_rounds = 0
@@ -143,7 +147,7 @@ index d263472..af39544 100644
          self._route_reported = False
          self._card_in_safe = False
          self._round_card_swiped = False
-@@ -334,6 +377,21 @@ class BagelApp(ZApplication):
+@@ -334,6 +381,21 @@ class BagelApp(ZApplication):
          self._round_pickup_presses = 0
          self._round_needs_organize = False
  
@@ -165,7 +169,7 @@ index d263472..af39544 100644
      def _count_round_failure(self) -> None:
          """失败局计入全局连续失败；已执行路线时同时计入该路线。"""
          self.consecutive_failures += 1
-@@ -344,6 +402,7 @@ class BagelApp(ZApplication):
+@@ -344,6 +406,7 @@ class BagelApp(ZApplication):
      def _clear_round_failures(self) -> None:
          """成功入仓清零全局计数和本局路线的计数；其他路线的计数保留。"""
          self.consecutive_failures = 0
@@ -173,8 +177,119 @@ index d263472..af39544 100644
          if self._round_route is not None:
              self.route_failures.pop(str(self._round_route.ref), None)
  
-@@ -505,6 +564,17 @@ class BagelApp(ZApplication):
-             # 入场核对过安全箱正好 1 件，按带着门禁卡处理。
+@@ -414,6 +477,18 @@ class BagelApp(ZApplication):
+         usage.log_start(self.config, room_name)
+         return self.round_success()
+ 
++    def _card_room_slots(self) -> list[tuple[str, str]]:
++        """按已选房间顺序给出 (显示名, 图标模板)，挑卡时依次各挑一张。"""
++        try:
++            catalog = BagelRouteStore(self.ctx).load_catalog()
++        except (OSError, ValueError, BagelRouteConfigError):
++            return [(room_id, self.config.keycard_template_for(room_id)) for room_id in self.config.keycard_rooms]
++        slots: list[tuple[str, str]] = []
++        for room_id in self.config.keycard_rooms:
++            room = catalog.room(room_id)
++            slots.append((room.name if room is not None else room_id, self.config.keycard_template_for(room_id)))
++        return slots
++
+     def _check_keycard_ready(self, catalog: BagelRouteCatalog) -> str:
+         """开房卡启动检查：房间已登记且与所选地图一致、房间段与入口段有效、至少一个出生点开启了入口段。
+ 
+@@ -423,31 +498,41 @@ class BagelApp(ZApplication):
+         Raises:
+             ValueError: 任一条件不满足。
+         """
+-        room_id = self.config.keycard_room
+-        room = catalog.room(room_id)
+-        if room is None:
+-            raise ValueError(f'开房卡选择的房间 {room_id} 未登记')
+-        if room.map_id != self.config.map_name:
+-            raise ValueError(f'{room.name}在{room.map_id}，与所选地图{self.config.map_name}不一致，请在设置页重新选择')
+-        problem = catalog.keycard_problem(room_id)
+-        if problem is not None:
+-            raise ValueError(problem)
+-        selection = catalog.keycard_selection(room_id)
+-        room_route = catalog.route(selection.room) if selection.room is not None else None
+-        if room_route is None:
+-            raise ValueError(f'{room.name}没有开启房间段，先在路线编辑器里录制并开启')
+-        spawns = [spawn for spawn in catalog.spawns if selection.entries.get(spawn.spawn_id) is not None]
+-        if not spawns:
+-            raise ValueError(f'没有出生点开启去{room.name}的入口段，先在路线编辑器里录制并开启')
+-        if self.config.keycard_reserve > 0 and not template_exists(self.config.keycard_template):
+-            raise ValueError(f'{room.name}还没有门禁卡图标模板，无法按保留张数清点；把保留张数设为 0 才能启动')
+-        log.info('贝果开房卡：房间 %s，房间段「%s」', room.name, room_route.name)
+-        for spawn in catalog.spawns:
+-            ref = selection.entries.get(spawn.spawn_id)
+-            route = catalog.route(ref) if ref is not None else None
+-            log.info('贝果出生点 %s：%s', spawn.name,
+-                     f'入口段「{route.name}」' if route is not None else '未开启入口段，退出重开')
+-        return room.name
++        room_ids = self.config.keycard_rooms
++        if not room_ids:
++            raise ValueError('开房卡还没有选择房间，先在设置页选择要开启的房间')
++        names: list[str] = []
++        covered: set[str] = set()
++        for room_id in room_ids:
++            room = catalog.room(room_id)
++            if room is None:
++                raise ValueError(f'开房卡选择的房间 {room_id} 未登记')
++            if room.map_id != self.config.map_name:
++                raise ValueError(f'{room.name}在{room.map_id}，与所选地图{self.config.map_name}不一致，请在设置页重新选择')
++            problem = catalog.keycard_problem(room_id)
++            if problem is not None:
++                raise ValueError(problem)
++            selection = catalog.keycard_selection(room_id)
++            room_route = catalog.route(selection.room) if selection.room is not None else None
++            if room_route is None:
++                raise ValueError(f'{room.name}没有开启房间段，先在路线编辑器里录制并开启')
++            spawns = [spawn for spawn in catalog.spawns if selection.entries.get(spawn.spawn_id) is not None]
++            if not spawns:
++                raise ValueError(f'没有出生点开启去{room.name}的入口段，先在路线编辑器里录制并开启')
++            if self.config.keycard_reserve > 0 and not template_exists(self.config.keycard_template_for(room_id)):
++                raise ValueError(f'{room.name}还没有门禁卡图标模板，无法按保留张数清点；把保留张数设为 0 才能启动')
++            names.append(room.name)
++            covered.update(spawn.spawn_id for spawn in spawns)
++            log.info('贝果开房卡：房间 %s，房间段「%s」', room.name, room_route.name)
++            for spawn in catalog.spawns:
++                ref = selection.entries.get(spawn.spawn_id)
++                route = catalog.route(ref) if ref is not None else None
++                log.info('贝果开房卡 %s 的出生点 %s：%s', room.name, spawn.name,
++                         f'入口段「{route.name}」' if route is not None else '未开启入口段')
++        missing = [spawn.name for spawn in catalog.spawns if spawn.spawn_id not in covered]
++        if missing:
++            log.info('贝果开房卡：这些出生点没有可用房间，识别到会直接退出重开：%s', '、'.join(missing))
++        return ' ＋ '.join(names)
+ 
+     @node_from(from_name='检查贝果运行条件')
+     @node_from(from_name='返回入口')
+@@ -467,8 +552,8 @@ class BagelApp(ZApplication):
+             occupied = safe_occupied_indices(self.last_screenshot)
+             if occupied is None:
+                 return self.round_fail('结算仓库安全箱格子状态不明，禁止开始新局')
+-            # 开房卡留到下一局的门禁卡占安全箱 1 格。
+-            allowed = 1 if self.config.is_keycard and self._card_in_safe else 0
++            # 开房卡留到下一局的门禁卡按本次携带张数占安全箱格。
++            allowed = self._carry_count() if self.config.is_keycard and self._card_in_safe else 0
+             if len(occupied) > allowed:
+                 return self.round_fail('结算仓库安全箱仍有物资，先核对去向，禁止开始新局')
+         self._spawn_hud_misses = 0
+@@ -493,7 +578,9 @@ class BagelApp(ZApplication):
+             carry_card=keycard,
+             card_room_name=self._keycard_room_name if keycard else None,
+             card_template=self.config.keycard_template if keycard else None,
++            card_rooms=self._card_room_slots() if keycard else None,
+             card_reserve=self.config.keycard_reserve if keycard else 0,
++            card_carry_count=self._carry_count() if keycard else 1,
+         ).execute()
+         if result.success and self._entry_map != map_name:
+             self._map_layers = None
+@@ -502,9 +589,20 @@ class BagelApp(ZApplication):
+             self._warehouse_capacity = result.data
+             return self.round_success(self.STATUS_CARDS_OUT)
+         if keycard and result.success:
+-            # 入场核对过安全箱正好 1 件，按带着门禁卡处理。
++            # 入场核对过安全箱正好是本次携带张数，按带着门禁卡处理。
              self._card_in_safe = True
              self._buy_card_attempted = False
 +        if result.success:
@@ -191,7 +306,17 @@ index d263472..af39544 100644
          if retrying_failure and not result.success:
              return self._finish_failed_round(result, '额外入场')
          return self.round_by_op_result(result, wait=1)
-@@ -824,8 +894,17 @@ class BagelApp(ZApplication):
+@@ -629,6 +727,9 @@ class BagelApp(ZApplication):
+             walker = BagelRouteWalker(
+                 self.ctx, blueprint_priority=self.config.blueprint_priority,
+                 keycard_room=self.config.keycard_room if self.config.is_keycard else None,
++                keycard_rooms=self.config.keycard_rooms if self.config.is_keycard else None,
++                pickup_keep_keywords=self.config.pickup_keep_keywords,
++                pick_all_leftovers=self.config.pick_all_leftovers,
+                 turn_memory=self._turn_memory,
+                 organize_backpack=True,
+                 map_layers=self._map_layers,
+@@ -824,8 +925,17 @@ class BagelApp(ZApplication):
              else previous.status if previous is not None else '局内失败'
          )
          release_flow_inputs(self.ctx)
@@ -211,7 +336,7 @@ index d263472..af39544 100644
          self._record_round_income(read_hud=False)
          path = screenshot.save_screenshot(self.ctx, self.last_screenshot, 'BagelApp')
          self.failure_history.append({
-@@ -835,8 +914,9 @@ class BagelApp(ZApplication):
+@@ -835,8 +945,9 @@ class BagelApp(ZApplication):
              'route': str(self._round_route.ref) if self._round_route is not None else None,
              'route_failures': self._round_route_failures(),
          })
@@ -223,7 +348,33 @@ index d263472..af39544 100644
          usage.log_screenshot(path)
          return self._finish_failed_round(BagelExit(self.ctx).execute(), '退出')
  
-@@ -898,8 +978,74 @@ class BagelApp(ZApplication):
+@@ -873,10 +984,14 @@ class BagelApp(ZApplication):
+                      self.rounds_since_sell, self.config.sell_interval)
+         return self._finish_failed_round(result, '入仓或清理')
+ 
++    def _carry_count(self) -> int:
++        """本次入场要带进安全箱的门禁卡张数，至少 1 张。"""
++        return max(1, self.config.keycard_carry_count)
++
+     def _keep_card_after_defeat(self) -> bool:
+-        """开房卡失败局：没刷门、安全箱只占 1 格（就是带进来的卡）、且不会因此停止时，卡留在安全箱。
++        """开房卡失败局：没刷门、安全箱只装着带进来的卡、且不会因此停止时，卡留在安全箱。
+ 
+-        任务要停止时不留卡，随入仓存回仓库。安全箱读不清时也按入仓处理。
++        任务要停止时不留卡，随入仓存回仓库。安全箱读不清或超量时也按入仓处理。
+         """
+         if not self.config.is_keycard or not self._card_in_safe or self._round_card_swiped:
+             return False
+@@ -885,7 +1000,7 @@ class BagelApp(ZApplication):
+             return False
+         self.screenshot()
+         occupied = safe_occupied_indices(self.last_screenshot)
+-        if occupied is None or len(occupied) != 1:
++        if occupied is None or len(occupied) > self._carry_count():
+             log.info('贝果开房卡：失败局安全箱占用 %s，不只有门禁卡，全部入仓', occupied)
+             return False
+         return True
+@@ -898,8 +1013,74 @@ class BagelApp(ZApplication):
              return f'连续失败 {self.consecutive_failures} 局'
          if route is not None and self._round_route_failures() >= limit:
              return f'路线「{route.name}」连续失败 {self._round_route_failures()} 局'
@@ -298,7 +449,7 @@ index d263472..af39544 100644
      @node_from(from_name='失败局结算仓库')
      @operation_node(name='判断连续失败次数', screenshot_before_round=False)
      def decide_defeat_rounds(self) -> OperationRoundResult:
-@@ -925,6 +1071,9 @@ class BagelApp(ZApplication):
+@@ -925,6 +1106,9 @@ class BagelApp(ZApplication):
                  return self.round_success(self.STATUS_CARDS_OUT)
              self.failure_retry_pending = True
              return self.round_success('继续入场')
@@ -309,10 +460,118 @@ index d263472..af39544 100644
              f'{subject}，达到上限 {limit}，已完成仓库结算，停止自动重开；'
              f'最后一局失败：{self.failure_reason}',
 diff --git a/config.py b/config.py
-index 1f087f0..eb4877e 100644
+index 1f087f0..85fe8ad 100644
 --- a/config.py
 +++ b/config.py
-@@ -201,6 +201,45 @@ class BagelConfig(ApplicationConfig):
+@@ -19,6 +19,9 @@ from .defs import (
+     DIFFICULTY_HARD,
+     DIFFICULTY_HAZARD,
+     DIFFICULTY_NORMAL,
++    KEYCARD_CARRY_DEFAULT,
++    KEYCARD_CARRY_MAX,
++    KEYCARD_CARRY_MIN,
+     KEYCARD_DIFFICULTY,
+     KEYCARD_KEEP_TYPES,
+     MAP_JANUS,
+@@ -101,22 +104,48 @@ class BagelConfig(ApplicationConfig):
+         return None
+ 
+     @property
+-    def keycard_room(self) -> str:
+-        """开房卡模式的目标房间标识，对应 ``keycard_rooms.yml`` 的 ``id``；未选为空串。"""
+-        value = self.get('keycard_room', '')
+-        return value if type(value) is str else ''
++    def keycard_rooms(self) -> list[str]:
++        """开房卡模式要开启的房间标识列表；一局只开一个，按识别到的出生点挑房间。"""
++        value = self.get('keycard_rooms', None)
++        rooms: list[str] = []
++        if type(value) is list:
++            rooms = [item for item in value if type(item) is str and item]
++        primary = self.get('keycard_room', '')
++        if type(primary) is str and primary and primary not in rooms:
++            rooms.insert(0, primary)
++        return rooms
++
++    @keycard_rooms.setter
++    def keycard_rooms(self, value: list[str]) -> None:
++        """保存房间列表；第一个同时写成 ``keycard_room``，兼容只认单房间的旧逻辑。"""
++        if type(value) is not list:
++            raise ValueError('keycard_rooms 必须是文本列表')
++        rooms = [item for item in value if type(item) is str and item]
++        self.update('keycard_rooms', rooms)
++        self.update('keycard_room', rooms[0] if rooms else '')
+ 
+     @property
+-    def keycard_template(self) -> str:
+-        """目标房间门禁卡的图标模板 id。"""
+-        return f'keycard_{self.keycard_room}'
++    def keycard_room(self) -> str:
++        """主房间标识（列表第一个）；未选为空串。"""
++        rooms = self.keycard_rooms
++        return rooms[0] if rooms else ''
+ 
+     @keycard_room.setter
+     def keycard_room(self, value: str) -> None:
+-        """保存目标房间；是否已登记由启动检查对照房间清单确认。"""
++        """保存主房间；已选的其它房间保持原顺序跟在后面。"""
+         if type(value) is not str:
+             raise ValueError('keycard_room 必须是文本')
+-        self.update('keycard_room', value)
++        others = [room for room in self.keycard_rooms if room != value]
++        self.keycard_rooms = ([value] if value else []) + others
++
++    def keycard_template_for(self, room_id: str) -> str:
++        """指定房间的门禁卡图标模板 id。"""
++        return f'keycard_{room_id}'
++
++    @property
++    def keycard_template(self) -> str:
++        """主房间门禁卡的图标模板 id。"""
++        return self.keycard_template_for(self.keycard_room)
+ 
+     @property
+     def keycard_reserve(self) -> int:
+@@ -157,6 +186,39 @@ class BagelConfig(ApplicationConfig):
+             raise ValueError('buy_keycard_count 必须是 1 至 30 的整数')
+         self.update('buy_keycard_count', value)
+ 
++    @property
++    def keycard_carry_count(self) -> int:
++        """开房卡一次带进安全箱的门禁卡张数；安全箱 5 格，默认 3 张。"""
++        value = self.get('keycard_carry_count', KEYCARD_CARRY_DEFAULT)
++        return value if type(value) is int and 1 <= value <= KEYCARD_CARRY_MAX else KEYCARD_CARRY_DEFAULT
++
++    @keycard_carry_count.setter
++    def keycard_carry_count(self, value: int) -> None:
++        """保存一次携带的张数。"""
++        if type(value) is not int or not 1 <= value <= KEYCARD_CARRY_MAX:
++            raise ValueError(f'keycard_carry_count 必须是 1 至 {KEYCARD_CARRY_MAX} 的整数')
++        self.update('keycard_carry_count', value)
++
++    @property
++    def pickup_keep_keywords(self) -> tuple[str, ...]:
++        """局内只捡这些关键词命中的拾取物；空表示全部捡。
++
++        局内的 F 提示行只读得到物品名和数量，读不到品质，所以按名字过滤。
++        分隔符支持中英文逗号、顿号和竖线。
++        """
++        value = self.get('pickup_keep_keywords', '')
++        if type(value) is not str:
++            return ()
++        text = value.replace('，', ',').replace('、', ',').replace('|', ',')
++        return tuple(part.strip() for part in text.split(',') if part.strip())
++
++    @pickup_keep_keywords.setter
++    def pickup_keep_keywords(self, value: str) -> None:
++        """保存拾取关键词。"""
++        if type(value) is not str:
++            raise ValueError('pickup_keep_keywords 必须是文本')
++        self.update('pickup_keep_keywords', value)
++
+     @property
+     def run_difficulty(self) -> str:
+         """本次实际进入的难度：开房卡固定高危，跑刀按 ``difficulty``。"""
+@@ -201,6 +263,56 @@ class BagelConfig(ApplicationConfig):
              raise ValueError('max_consecutive_failures 必须是 1 至 10 的整数')
          self.update('max_consecutive_failures', value)
  
@@ -355,10 +614,34 @@ index 1f087f0..eb4877e 100644
 +            raise ValueError('overlay_opacity 必须是 0 至 100 的整数')
 +        self.update('overlay_opacity', value)
 +
++    @property
++    def pick_all_leftovers(self) -> bool:
++        """入箱后是否把容器剩余物品全部拾取进背包。"""
++        return self.get('pick_all_leftovers', False)
++
++    @pick_all_leftovers.setter
++    def pick_all_leftovers(self, value: bool) -> None:
++        if type(value) is not bool:
++            raise ValueError('pick_all_leftovers 必须是布尔值')
++        self.update('pick_all_leftovers', value)
++
      @property
      def blueprint_priority(self) -> bool:
          """蓝图是否优先于全部非蓝图入箱；旧配置缺项也开启。"""
-@@ -384,6 +423,14 @@ class BagelConfig(ApplicationConfig):
+@@ -373,6 +485,12 @@ class BagelConfig(ApplicationConfig):
+         buy_count = self.get('buy_keycard_count', 1)
+         if type(buy_count) is not int or not 1 <= buy_count <= 30:
+             raise ValueError('buy_keycard_count 必须是 1 至 30 的整数')
++        carry = self.get('keycard_carry_count', KEYCARD_CARRY_DEFAULT)
++        if type(carry) is not int or not KEYCARD_CARRY_MIN <= carry <= KEYCARD_CARRY_MAX:
++            raise ValueError(f'keycard_carry_count 必须是 {KEYCARD_CARRY_MIN} 至 {KEYCARD_CARRY_MAX} 的整数')
++        keywords = self.get('pickup_keep_keywords', '')
++        if type(keywords) is not str:
++            raise ValueError('pickup_keep_keywords 必须是文本')
+         if self.difficulty not in DIFFICULTIES:
+             raise ValueError(f'difficulty 只能是 {"、".join(DIFFICULTIES)}')
+         interval = self.sell_interval
+@@ -384,6 +502,16 @@ class BagelConfig(ApplicationConfig):
          failures = self.max_consecutive_failures
          if type(failures) is not int or not 1 <= failures <= 10:
              raise ValueError('max_consecutive_failures 必须是 1 至 10 的整数')
@@ -370,9 +653,23 @@ index 1f087f0..eb4877e 100644
 +        opacity = self.get('overlay_opacity', 70)
 +        if type(opacity) is not int or not 0 <= opacity <= 100:
 +            raise ValueError('overlay_opacity 必须是 0 至 100 的整数')
++        if type(self.pick_all_leftovers) is not bool:
++            raise ValueError('pick_all_leftovers 必须是布尔值')
          if type(self.blueprint_priority) is not bool:
              raise ValueError('blueprint_priority 必须是布尔值')
          if type(self.auto_clean_warehouse) is not bool:
+diff --git a/defs.py b/defs.py
+index bc850a1..790b1f5 100644
+--- a/defs.py
++++ b/defs.py
+@@ -96,3 +96,7 @@ MODE_DIFFICULTIES: dict[str, tuple[str, ...]] = {MODE_RUN: DIFFICULTIES, MODE_KE
+ INTERACT_TAP_SECONDS: float = 0.05
+ #: 开房卡模式出售时一律跳过的类型，防止卖掉要用的卡。
+ KEYCARD_KEEP_TYPES: tuple[str, ...] = ('门禁卡',)
++#: 开房卡一次带进安全箱的门禁卡张数取值范围与默认值；安全箱共 5 格。
++KEYCARD_CARRY_MIN: int = 1
++KEYCARD_CARRY_MAX: int = 5
++KEYCARD_CARRY_DEFAULT: int = 3
 diff --git a/gui/route_web_editor.py b/gui/route_web_editor.py
 index 85dd162..a151c16 100644
 --- a/gui/route_web_editor.py
@@ -466,10 +763,26 @@ index 3e4de4a..9c24b44 100644
          metrics = painter.fontMetrics()
          text_height = self._text_height(metrics)
 diff --git a/gui/setting_interface.py b/gui/setting_interface.py
-index caf6f0d..816f89e 100644
+index caf6f0d..fdf5bf8 100644
 --- a/gui/setting_interface.py
 +++ b/gui/setting_interface.py
-@@ -226,6 +226,15 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
+@@ -14,6 +14,7 @@ from PySide6.QtCore import Qt, QTimer
+ from PySide6.QtGui import QCloseEvent, QKeyEvent
+ from PySide6.QtWidgets import (
+     QFrame,
++    QLineEdit,
+     QGridLayout,
+     QHBoxLayout,
+     QLabel,
+@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
+ )
+ from qfluentwidgets import (
+     BodyLabel,
++    CheckBox,
+     CaptionLabel,
+     ComboBox,
+     FluentIcon,
+@@ -226,6 +228,15 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
          self.keycard_card: QWidget = self._make_keycard_card(widget)
          layout.addWidget(self.keycard_card)
          layout.addWidget(self._make_end_conditions(widget))
@@ -485,7 +798,171 @@ index caf6f0d..816f89e 100644
          self.blueprint_priority: SwitchSettingCard = SwitchSettingCard(
              icon=FluentIcon.DOCUMENT,
              title='蓝图优先',
-@@ -508,7 +517,44 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
+@@ -234,6 +245,7 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
+         )
+         self.blueprint_priority.setFixedHeight(88)
+         layout.addWidget(self.blueprint_priority)
++        layout.addWidget(self._make_pickup_card(widget))
+         layout.addWidget(self._make_sale_group(widget))
+         layout.addStretch(1)
+         self._refresh_clean_options()
+@@ -282,13 +294,17 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
+         room_row = QHBoxLayout()
+         room_row.setSpacing(12)
+         room_row.addWidget(BodyLabel('房间', card))
+-        self.room_box: ComboBox = ComboBox(card)
+-        self.room_box.setMinimumWidth(ChoiceSegment.WIDTH)
+-        self.room_box.setAccessibleName('开房卡房间')
+-        self.room_box.currentIndexChanged.connect(self._on_room_changed)
+-        room_row.addWidget(self.room_box)
++        self.room_hint: CaptionLabel = CaptionLabel('勾选要开启的房间，可多选；一局只开识别到的出生点对应的那一个', card)
++        room_row.addWidget(self.room_hint)
+         room_row.addStretch(1)
+         layout.addLayout(room_row)
++        self.extra_rooms_box: QWidget = QWidget(card)
++        self.extra_rooms_layout: QHBoxLayout = QHBoxLayout(self.extra_rooms_box)
++        self.extra_rooms_layout.setContentsMargins(0, 0, 0, 0)
++        self.extra_rooms_layout.setSpacing(16)
++        layout.addWidget(self.extra_rooms_box)
++        self.extra_room_checks: dict[str, CheckBox] = {}
++        """每个房间一个勾选框；勾第一个作为主房间，用于买卡与结算。"""
+         self.keycard_status: CaptionLabel = CaptionLabel(card)
+         self.keycard_status.setWordWrap(True)
+         layout.addWidget(self.keycard_status)
+@@ -323,6 +339,17 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
+         buy_count_row.addStretch(1)
+         layout.addLayout(buy_count_row)
+ 
++        carry_row = QHBoxLayout()
++        carry_row.setSpacing(8)
++        self.keycard_carry_count: CountSpinBox = CountSpinBox(1, 5, card)
++        self.keycard_carry_count.setAccessibleName('一次携带门禁卡张数')
++        self.keycard_carry_count.setToolTip('安全箱一共 5 格；带几张就挑几张，入场核对与结算都按这个数')
++        carry_row.addWidget(BodyLabel('一次携带', card))
++        carry_row.addWidget(self.keycard_carry_count)
++        carry_row.addWidget(BodyLabel('张门禁卡', card))
++        carry_row.addStretch(1)
++        layout.addLayout(carry_row)
++
+         self.buy_count_hint: CaptionLabel = CaptionLabel('上限30张', card)
+         self.buy_count_hint.setWordWrap(True)
+         layout.addWidget(self.buy_count_hint)
+@@ -415,25 +442,48 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
+         return previous
+ 
+     def _fill_room_box(self) -> None:
+-        """房间下拉框只列所选地图的房间；开房卡模式下所选房间不在其中时选第一个并保存。"""
++        """房间下拉框选主房间，勾选框加成同时开启的房间；都只列所选地图的房间。"""
+         if self.config is None:
+             return
+         rooms = [room for room in self._rooms if room.map_id == self.config.map_name]
+-        with QtCore.QSignalBlocker(self.room_box):
+-            self.room_box.clear()
+-            for room in rooms:
+-                self.room_box.addItem(room.name, userData=room.room_id)
+-            ids = [room.room_id for room in rooms]
+-            if self.config.keycard_room not in ids and ids and self.config.is_keycard:
+-                self.config.keycard_room = ids[0]
+-            if self.config.keycard_room in ids:
+-                self.room_box.setCurrentIndex(ids.index(self.config.keycard_room))
++        ids = [room.room_id for room in rooms]
++        if self.config.is_keycard and ids:
++            selected = [room for room in self.config.keycard_rooms if room in ids]
++            if not selected:
++                selected = [ids[0]]
++            if selected != self.config.keycard_rooms:
++                self.config.keycard_rooms = selected
++        self._fill_extra_rooms(rooms)
++
++    def _fill_extra_rooms(self, rooms: list[BagelKeycardRoom]) -> None:
++        """按当前地图重建附加房间勾选框，勾选状态取自配置里的房间列表。"""
++        if self.config is None:
++            return
++        for box in self.extra_room_checks.values():
++            self.extra_rooms_layout.removeWidget(box)
++            box.deleteLater()
++        self.extra_room_checks.clear()
++        selected = set(self.config.keycard_rooms)
++        for index, room in enumerate(rooms):
++            box = CheckBox(room.name, self.extra_rooms_box)
++            box.setChecked(room.room_id in selected)
++            box.stateChanged.connect(self._on_extra_room_toggled)
++            self.extra_rooms_layout.insertWidget(index, box)
++            self.extra_room_checks[room.room_id] = box
++
++    def _on_extra_room_toggled(self) -> None:
++        """勾选变化时写回房间列表并刷新就绪情况。"""
++        if not self._config_loaded or self.config is None:
++            return
++        rooms = [room_id for room_id, box in self.extra_room_checks.items() if box.isChecked()]
++        self.config.keycard_rooms = rooms
++        self._refresh_keycard_status()
+ 
+     def _refresh_keycard_status(self) -> None:
+-        """一行写清房间能不能跑：可用的出生点，或缺什么。"""
++        """一行写清房间能不能跑：已选房间合起来可用的出生点，或缺什么。"""
+         if self.config is None:
+             return
+-        room_id = self.config.keycard_room
++        room_ids = self.config.keycard_rooms
+         problems: list[str] = []
+         spawns: list[str] = []
+         try:
+@@ -442,19 +492,29 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
+             catalog = None
+             problems.append(str(error))
+         if catalog is not None:
+-            if catalog.room(room_id) is None:
++            if not room_ids:
+                 problems.append('未选择房间')
+-            else:
++            for room_id in room_ids:
++                room = catalog.room(room_id)
++                if room is None:
++                    problems.append(f'房间 {room_id} 未登记')
++                    continue
+                 problem = catalog.keycard_problem(room_id)
+                 if problem is not None:
+-                    problems.append(problem)
++                    problems.append(f'{room.name}：{problem}')
+                 selection = catalog.keycard_selection(room_id)
+                 if selection.room is None or catalog.route(selection.room) is None:
+-                    problems.append('未开启房间段')
+-                spawns = [spawn.name for spawn in catalog.spawns if selection.entries.get(spawn.spawn_id) is not None]
+-                if not spawns:
+-                    problems.append('没有出生点开启入口段')
+-        if self.config.keycard_reserve > 0 and not template_exists(self.config.keycard_template):
++                    problems.append(f'{room.name}：未开启房间段')
++                room_spawns = [spawn.name for spawn in catalog.spawns
++                               if selection.entries.get(spawn.spawn_id) is not None]
++                if not room_spawns:
++                    problems.append(f'{room.name}：没有出生点开启入口段')
++                spawns.extend(name for name in room_spawns if name not in spawns)
++                if self.config.keycard_reserve > 0 and not template_exists(
++                    self.config.keycard_template_for(room_id)
++                ):
++                    problems.append(f'{room.name}：没有卡图标，保留张数只能填 0')
++        if self.config.keycard_reserve > 0 and not room_ids and not template_exists(self.config.keycard_template):
+             problems.append('没有卡图标，保留张数只能填 0')
+         if problems:
+             self.keycard_status.setText('；'.join(problems))
+@@ -480,15 +540,6 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
+         self._fill_room_box()
+         self._refresh_target()
+ 
+-    def _on_room_changed(self, index: int) -> None:
+-        """保存房间并刷新就绪情况。"""
+-        if not self._config_loaded or self.config is None or index < 0:
+-            return
+-        room_id = self.room_box.itemData(index)
+-        if isinstance(room_id, str):
+-            self.config.keycard_room = room_id
+-        self._refresh_keycard_status()
+-
+     def _make_end_conditions(self, parent: QWidget) -> QWidget:
+         """两个计数输入组成一句话。"""
+         card = SimpleCardWidget(parent)
+@@ -508,7 +559,73 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
          sentence.addWidget(BodyLabel('次后结束任务', card))
          sentence.addStretch(1)
          layout.addLayout(sentence)
@@ -507,6 +984,35 @@ index caf6f0d..816f89e 100644
 +        hint.setWordWrap(True)
 +        layout.addWidget(hint)
 +        return card
++
++    def _make_pickup_card(self, parent: QWidget) -> QWidget:
++        """只捡关键词：局内 F 提示只读得到物品名，按名字命中才捡；留空表示全捡。"""
++        card = SimpleCardWidget(parent)
++        layout = QVBoxLayout(card)
++        layout.setContentsMargins(20, 16, 20, 16)
++        layout.setSpacing(8)
++        row = QHBoxLayout()
++        row.setSpacing(12)
++        row.addWidget(BodyLabel('只捡这些物品', card))
++        self.pickup_keep_keywords: QLineEdit = QLineEdit(card)
++        self.pickup_keep_keywords.setPlaceholderText('留空表示全捡；多个关键词用逗号分隔，例如：烈性炸药,电路核心')
++        self.pickup_keep_keywords.setAccessibleName('只捡关键词')
++        self.pickup_keep_keywords.setMinimumWidth(360)
++        self.pickup_keep_keywords.textChanged.connect(self._on_pickup_keywords_changed)
++        row.addWidget(self.pickup_keep_keywords, 1)
++        layout.addLayout(row)
++        self.pickup_keywords_hint: CaptionLabel = CaptionLabel(
++            '命中的物品才按 F 拾取；其余路过不捡。容器里的「全部拾取」仍会把整箱收进背包。',
++            card,
++        )
++        self.pickup_keywords_hint.setWordWrap(True)
++        layout.addWidget(self.pickup_keywords_hint)
++        return card
++
++    def _on_pickup_keywords_changed(self, text: str) -> None:
++        """保存只捡关键词。"""
++        if self.config is not None:
++            self.config.pickup_keep_keywords = text
 +
 +    def _make_overlay_card(self, parent: QWidget) -> QWidget:
 +        """运行悬浮窗的底色不透明度。"""
@@ -531,7 +1037,7 @@ index caf6f0d..816f89e 100644
          hint.setWordWrap(True)
          layout.addWidget(hint)
          return card
-@@ -778,6 +824,7 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
+@@ -778,6 +895,7 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
              log.error('打开贝果路线编辑器失败', exc_info=True)
              MessageBox('无法打开路线编辑器', str(error), self.window()).exec()
              return
@@ -539,7 +1045,7 @@ index caf6f0d..816f89e 100644
          editor.exec()
          editor.deleteLater()
          if self.config is None:
-@@ -803,6 +850,9 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
+@@ -803,6 +921,9 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
          self.blueprint_priority.init_with_adapter(
              get_prop_adapter(self.config, 'blueprint_priority'),
          )
@@ -549,7 +1055,7 @@ index caf6f0d..816f89e 100644
          problem = self.config.stored_mode_map_problem()
          if problem is not None:
              # 手改配置写进了不认识的值：把界面按默认显示的值写回，启动校验才放行。
-@@ -819,6 +869,8 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
+@@ -819,12 +940,15 @@ class BagelSettingInterface(VerticalScrollInterface, GroupIdMixin):
          for control, field in (
              (self.success_count, 'max_success_rounds'),
              (self.failure_count, 'max_consecutive_failures'),
@@ -558,6 +1064,267 @@ index caf6f0d..816f89e 100644
              (self.sell_interval, 'sell_interval'),
              (self.auto_clean_switch, 'auto_clean_warehouse'),
              (self.clean_mode, 'clean_mode'),
+             (self.keycard_reserve, 'keycard_reserve'),
+             (self.auto_buy_keycard, 'auto_buy_keycard'),
+             (self.buy_keycard_count, 'buy_keycard_count'),
++            (self.keycard_carry_count, 'keycard_carry_count'),
+         ):
+             control.setEnabled(False)
+             control.init_with_adapter(get_prop_adapter(self.config, field))
+diff --git a/operation/enter.py b/operation/enter.py
+index 6a14858..5a836a3 100644
+--- a/operation/enter.py
++++ b/operation/enter.py
+@@ -48,6 +48,8 @@ if TYPE_CHECKING:
+ _ENTRY_RECLICK_SECONDS: float = 3
+ #: 同一入场提示点击后仍未消失、零投资点击后投资页仍未消失的等待上限。
+ _ENTRY_DIALOG_TIMEOUT_SECONDS: float = 15
++#: 「等待贝果加载完成」累计超过这个时间就认定加载卡死，交给上层重开游戏。
++_ENTRY_LOAD_TIMEOUT_SECONDS: float = 90
+ 
+ 
+ class BagelEnter(BagelOperation):
+@@ -65,6 +67,7 @@ class BagelEnter(BagelOperation):
+         recovery_filter_groups: tuple[tuple[str, ...], ...] | None = None,
+         difficulty: str = DEFAULT_DIFFICULTY, map_name: str = MAP_JANUS, carry_card: bool = False,
+         card_room_name: str | None = None, card_template: str | None = None, card_reserve: int = 0,
++        card_carry_count: int = 1, card_rooms: list[tuple[str, str | None]] | None = None,
+     ) -> None:
+         """正式应用首次入场允许清空并重建快捷手册入口；独立工具默认复用现有贝果页。
+ 
+@@ -75,12 +78,21 @@ class BagelEnter(BagelOperation):
+             card_room_name: 开房卡房间显示名称，挑卡时与门禁卡浮窗标题比对。
+             card_template: 该房间门禁卡的图标模板，挑卡时给候选格排序。
+             card_reserve: 保留张数，挑卡前清点仓库，不多于这个数就不挑。
++            card_carry_count: 本次要带进安全箱的门禁卡张数；挑够这么多张才入场。
+         """
+         timeout = 660 if allow_clear_loadout else 240
+         super().__init__(ctx, op_name='贝果-入场', timeout_seconds=timeout + (300 if carry_card else 0))
+         self.card_room_name: str | None = card_room_name
+         self.card_template: str | None = card_template
+         self.card_reserve: int = card_reserve
++        self.card_carry_count: int = max(1, card_carry_count)
++        self.cards_picked: int = 0
++        """本次入场已经挑进安全箱的门禁卡张数。"""
++        self.card_rooms: list[tuple[str, str | None]] = (
++            [(room, template) for room, template in card_rooms] if card_rooms
++            else ([(card_room_name, card_template)] if card_room_name else [])
++        )
++        """本轮要挑的各房间 (显示名, 图标模板)；按顺序各挑一张门禁卡。"""
+         self.card_picked: bool = False
+         """本次入场是否已经挑过卡；只挑一次，挑完仍不对就停止。"""
+         self.difficulty: str = difficulty
+@@ -111,6 +123,7 @@ class BagelEnter(BagelOperation):
+         self._warning_started_at: float = 0
+         self._warning_reclicked: bool = False
+         self._resume_check: bool = False
++        self._load_wait_started_at: float = 0
+ 
+     def handle_init(self) -> None:
+         """重复运行时清除上一局的确认状态。"""
+@@ -130,6 +143,7 @@ class BagelEnter(BagelOperation):
+         self._warning_reclicked = False
+         self._resume_check = False
+         self.card_picked = False
++        self.cards_picked = 0
+ 
+     def _map_state(self) -> str:
+         """读选图页：``ok`` 地图与难度都对，``wrong`` 明确选错，``unknown`` 读数不明。"""
+@@ -433,12 +447,14 @@ class BagelEnter(BagelOperation):
+         return result
+ 
+     def _card_loadout_problem(self, values: dict[str, str], states: list[bool | None]) -> str | None:
+-        """开房卡携带核对：背包与装备槽为空，安全箱正好 1 件。不满足时返回停止原因。
++        """开房卡携带核对：背包与装备槽为空，安全箱正好装够目标张数。不满足时返回停止原因。
+ 
+         只核对件数，不认卡的种类；带错卡由刷卡处的持卡计数发现。
++        安全箱里张数不够就返回 ``STATUS_NEED_CARD`` 继续挑，挑够再核对通过。
+         """
++        target = max(1, self.card_carry_count)
+         if any(states) or not empty_capacity(values.get('背包数量', '')):
+-            return f'开房卡只允许在安全箱放 1 张门禁卡，请清空武备、装备、道具和背包；容器 {values}，槽位 {states}'
++            return f'开房卡只允许在安全箱放 {target} 张门禁卡，请清空武备、装备、道具和背包；容器 {values}，槽位 {states}'
+         pair = parse_capacity_pair(values.get('安全箱数量', ''))
+         if pair is None:
+             return f'安全箱数量不明，停止并保留现场；容器 {values}'
+@@ -446,24 +462,39 @@ class BagelEnter(BagelOperation):
+             if self.card_picked or self.card_room_name is None:
+                 return '挑卡后安全箱仍为空，停止并保留现场'
+             return self.STATUS_NEED_CARD
+-        if pair[0] != 1:
+-            return f'开房卡只允许在安全箱放 1 张门禁卡，当前安全箱 {values.get("安全箱数量")}'
+-        log.info('贝果开房卡：安全箱 %s，背包 %s，按带 1 张门禁卡入场', values.get('安全箱数量'), values.get('背包数量'))
++        if pair[0] > target:
++            return f'开房卡只允许在安全箱放 {target} 张门禁卡，当前安全箱 {values.get("安全箱数量")}'
++        if pair[0] < target:
++            if self.card_room_name is not None and self.cards_picked < target:
++                return self.STATUS_NEED_CARD
++            return f'安全箱只有 {pair[0]} 张门禁卡，少于目标 {target} 张，停止并保留现场'
++        log.info('贝果开房卡：安全箱 %s，背包 %s，按带 %s 张门禁卡入场', values.get('安全箱数量'), values.get('背包数量'), target)
+         return None
+ 
+     @node_from(from_name='核对零携带', status=STATUS_NEED_CARD, ignore_status=False)
+     @operation_node(name='挑选门禁卡', screenshot_before_round=False)
++    def _next_card_room(self) -> tuple[str, str | None]:
++        """按已挑张数取下一个房间与其图标模板；只有一个房间时始终是它。"""
++        if not self.card_rooms:
++            return self.card_room_name or '', self.card_template
++        index = self.cards_picked % len(self.card_rooms)
++        room_name, template = self.card_rooms[index]
++        return room_name, template
++
+     def pick_card(self) -> OperationRoundResult:
+-        """安全箱为空时从备战进仓库挑 1 张目标房间的卡，回到备战后重新核对携带。"""
++        """安全箱不满时从备战进仓库挑下一张卡，回到备战后重新核对携带。"""
+         self.card_picked = True
++        room_name, template = self._next_card_room()
+         operation = BagelPickKeycard(
+-            self.ctx, self.card_room_name or '', self.card_template, from_prepare=True,
+-            reserve=self.card_reserve,
++            self.ctx, room_name, template, from_prepare=True,
++            reserve=self.card_reserve, carry_target=self.card_carry_count,
+         )
+         result = operation.execute()
+         self.screenshot()
+         if not result.success:
+             return self.round_fail(result.status, data=result.data)
++        self.cards_picked = min(self.cards_picked + 1, self.card_carry_count)
++        log.info('贝果开房卡：已挑 %s/%s 张门禁卡（房间 %s）', self.cards_picked, self.card_carry_count, room_name)
+         return self.round_success(wait=0.5)
+ 
+     @node_from(from_name='核对零携带', status='需要清空启动战备')
+@@ -560,7 +591,7 @@ class BagelEnter(BagelOperation):
+             # 无投资弹窗时，若已确认过提示且等待超过1秒，弹窗已关闭，直接转入等待加载
+             if not self.need_investment and self.operation_usage_time - self._warning_started_at >= 1.0:
+                 self._pending_warning = None
+-                return self.round_wait('等待贝果加载完成', wait=1)
++                return self._wait_loading()
+             return self.round_wait('等待入场提示切换', wait=0.25)
+         if (not self.confirmed_warnings and not self._entry_reclicked
+                 and self.operation_usage_time - self._entry_clicked_at >= _ENTRY_RECLICK_SECONDS
+@@ -570,4 +601,18 @@ class BagelEnter(BagelOperation):
+             if result.is_success:
+                 self._entry_reclicked = True
+                 return self.round_wait('补点前往空洞', wait=1)
++        return self._wait_loading()
++
++    def _wait_loading(self) -> OperationRoundResult:
++        """等待入场加载；累计超过上限就报「入场加载超时」，交给上层重开游戏。
++
++        Returns:
++            等待中的轮询结果，或加载卡死时的失败结果。
++        """
++        if self._load_wait_started_at <= 0:
++            self._load_wait_started_at = self.operation_usage_time
++        waited = self.operation_usage_time - self._load_wait_started_at
++        if waited >= _ENTRY_LOAD_TIMEOUT_SECONDS:
++            return self.round_fail(f'入场加载超时（{waited:.0f}s 未进入局内），停止并保留现场')
+         return self.round_wait('等待贝果加载完成', wait=1)
++
+diff --git a/operation/organize_backpack.py b/operation/organize_backpack.py
+index 21e106e..49c34ae 100644
+--- a/operation/organize_backpack.py
++++ b/operation/organize_backpack.py
+@@ -103,6 +103,8 @@ class BagelOrganizeBackpack(BagelOperation):
+     """拖拽后画面没确认时的重拖次数；仍不行就跳过这一格。"""
+     ACTION_LIMIT: int = 20
+     """本次最多发出的拖拽数；每次对换都让安全箱严格变好，正常远用不到。"""
++    SWAP_PAIR_LIMIT: int = 1
++    """同一对（背包格, 安全箱格）最多对换几次；件数读数不可靠时防止来回拖。"""
+     PANEL_WAIT_LIMIT: int = 10
+     """背包页或安全箱格子认不清时的等待帧数上限（每帧约 0.3 秒）。"""
+ 
+@@ -133,6 +135,9 @@ class BagelOrganizeBackpack(BagelOperation):
+         self._skipped: set[int] = set()
+         self._stack_blocked: set[tuple[int, int]] = set()
+         """试过叠放却没成的（背包格, 安全箱格）；本次整理不再试这一对。"""
++        self._swap_counts: dict[tuple[int, int], int] = {}
++        """已经对换过的（背包格, 安全箱格）次数；超过上限就不再换这一对。"""
++
+         self._panel_wait: int = 0
+         self._pending_before: MatLike | None = None
+         self._pending_source: int | None = None
+@@ -157,6 +162,7 @@ class BagelOrganizeBackpack(BagelOperation):
+         self._actions = 0
+         self._skipped = set()
+         self._stack_blocked = set()
++        self._swap_counts = {}
+         self._panel_wait = 0
+         self._pressed_at = None
+         self._esc_at = None
+@@ -295,6 +301,16 @@ class BagelOrganizeBackpack(BagelOperation):
+         )
+         if choice is None:
+             return self.round_success(self.STATUS_DONE)
++        if choice.kind == ACTION_SWAP:
++            pair = (choice.source_index, choice.dest_index)
++            if self._swap_counts.get(pair, 0) >= self.SWAP_PAIR_LIMIT:
++                # 同一对反复对换说明件数读数不可靠（例如把 11 读成 1），再拖只会来回搬。
++                log.warning(
++                    '贝果整理背包：背包格 %s 与安全箱格 %s 已对换过 %s 次，件数读数不可靠，跳过这一格',
++                    choice.source_index + 1, choice.dest_index + 1, self._swap_counts[pair],
++                )
++                self._skipped.add(choice.source_index)
++                return self.round_success(_STATUS_NEXT, wait=0.2)
+         if self._actions >= self.ACTION_LIMIT:
+             log.warning('贝果整理背包：已拖拽 %s 次，停止整理', self._actions)
+             return self.round_success(self.STATUS_DONE)
+@@ -313,6 +329,9 @@ class BagelOrganizeBackpack(BagelOperation):
+         self._repeated = 0
+         if self.ledger is not None:
+             self.ledger.start_transfer(choice.dest_index, (choice.mark.item_type, choice.mark.quality))
++        if choice.kind == ACTION_SWAP:
++            pair = (choice.source_index, choice.dest_index)
++            self._swap_counts[pair] = self._swap_counts.get(pair, 0) + 1
+         self._drag(choice.source_index, choice.dest_index)
+         return self.round_success('已拖拽一件', wait=0.7)
+ 
+diff --git a/operation/pick_keycard.py b/operation/pick_keycard.py
+index ede25a2..ecff90f 100644
+--- a/operation/pick_keycard.py
++++ b/operation/pick_keycard.py
+@@ -109,7 +109,7 @@ class BagelPickKeycard(BagelOperation):
+ 
+     def __init__(
+         self, ctx: ZContext, room_name: str, template_id: str | None, *, from_prepare: bool,
+-        reserve: int = 0,
++        reserve: int = 0, carry_target: int = 1,
+     ) -> None:
+         """
+         Args:
+@@ -117,12 +117,14 @@ class BagelPickKeycard(BagelOperation):
+             template_id: 该房间门禁卡的图标模板；None 时按格子顺序逐个核对。
+             from_prepare: 是否从备战页进入仓库并在挑完后返回备战。
+             reserve: 保留张数；大于 0 时先清点，必须有图标模板。
++            carry_target: 本次要带进安全箱的总张数；安全箱里已经有这么多张就不再挑。
+         """
+         super().__init__(ctx, op_name='贝果-挑选门禁卡', timeout_seconds=300 if reserve == 0 else 480)
+         self.room_name: str = room_name
+         self.template_id: str | None = template_id
+         self.from_prepare: bool = from_prepare
+         self.reserve: int = reserve
++        self.carry_target: int = max(1, carry_target)
+         self.counting: bool = reserve > 0
+         """当前是否在清点阶段；清点完转入挑卡。"""
+         self.counted: int | None = None
+@@ -248,12 +250,14 @@ class BagelPickKeycard(BagelOperation):
+     @node_from(from_name='打开挑卡仓库')
+     @operation_node(name='核对挑卡安全箱', timeout_seconds=10)
+     def check_safe(self) -> OperationRoundResult:
+-        """安全箱必须为空：挑卡只放这 1 张，放进去后靠第 1 格有物确认。"""
++        """安全箱里的张数必须少于本次携带目标：挑够目标张数就不再挑。"""
+         occupied = safe_occupied_indices(self.last_screenshot)
+         if occupied is None:
+             return self.round_retry('仓库安全箱格子状态不明', wait=0.5)
+-        if occupied:
+-            return self.round_fail(f'安全箱已有物品（格 {occupied}），不挑卡')
++        if occupied and len(occupied) >= self.carry_target:
++            return self.round_fail(
++                f'安全箱已有 {len(occupied)} 件（格 {occupied}），已达本次携带目标 {self.carry_target} 张，不挑卡',
++            )
+         if self.counting and (self.template_id is None or load_template(self.template_id) is None):
+             return self.round_fail('没有该房间门禁卡的图标模板，无法按保留张数清点')
+         return self.round_success()
 diff --git a/route/input_worker.py b/route/input_worker.py
 index 73a9e75..5168e1e 100644
 --- a/route/input_worker.py
@@ -785,7 +1552,7 @@ index 0bfab03..cfc82eb 100644
  
  def wait_foreground(hwnd: int, timeout: float, stop: Event | None = None) -> bool:
 diff --git a/route/route_stats.py b/route/route_stats.py
-index 2d2fa8c..adcabc9 100644
+index 2d2fa8c..28a616f 100644
 --- a/route/route_stats.py
 +++ b/route/route_stats.py
 @@ -18,6 +18,7 @@ from one_dragon.utils.log_utils import log
@@ -796,15 +1563,15 @@ index 2d2fa8c..adcabc9 100644
      OUTCOME_SUCCESS,
      OUTCOME_UNSUPPORTED,
      format_duration,
-@@ -204,6 +205,61 @@ def extra_hourly(income: float, seconds: float, restart_seconds: float | None) -
+@@ -204,6 +205,66 @@ def extra_hourly(income: float, seconds: float, restart_seconds: float | None) -
      return income / (seconds - restart_seconds) * 3600
  
  
 +def push_lines(records: list[BagelRouteRecord]) -> list[str]:
-+    """推送用的路线汇总，只要两行：跑起来的局数、直接重开的局数。
++    """推送用的路线汇总：成功入仓、直接重开、被狗击败（阵亡）三类。
 +
-+    有 ``route_id`` 的记录算「成功运行」（真的走了路线，胜负另算），
-+    没有 ``route_id`` 的是出生点没有可执行路线、入场后直接重开的空转局。
++    只有 ``成功入仓`` 算成功；没有 ``route_id`` 的是出生点没有可执行路线、
++    入场后直接重开的空转局；阵亡局单独列一行，方便看被怪打死的次数。
 +    逐条路线的明细仍然由 :func:`report_lines` 写日志。
 +
 +    Args:
@@ -812,9 +1579,14 @@ index 2d2fa8c..adcabc9 100644
 +    """
 +    if not records:
 +        return []
-+    runs = sum(1 for record in records if record.route_id is not None)
-+    restarts = len(records) - runs
-+    return [f'成功运行：{runs} 局', f'直接重开：{restarts} 局']
++    restarts = sum(1 for record in records if record.route_id is None)
++    success = sum(1 for record in records if record.outcome == OUTCOME_SUCCESS)
++    deaths = sum(1 for record in records if record.outcome == OUTCOME_DEFEATED)
++    return [
++        f'成功入仓：{success} 局',
++        f'直接重开：{restarts} 局',
++        f'被狗击败：{deaths} 局',
++    ]
 +
 +
 +def _push_spawn_text(spawn, map_records: list[BagelRouteRecord], restarts: list[BagelRouteRecord],
@@ -859,7 +1631,7 @@ index 2d2fa8c..adcabc9 100644
      """按地图、出生点生成汇总表，每行一条日志。
  
 diff --git a/route/route_walker.py b/route/route_walker.py
-index 4870edb..f4b9f19 100644
+index 4870edb..7ccbc1c 100644
 --- a/route/route_walker.py
 +++ b/route/route_walker.py
 @@ -19,6 +19,7 @@
@@ -930,7 +1702,7 @@ index 4870edb..f4b9f19 100644
  STEP_REST_POLL: float = 0.03
  """停顿期间主线的轮询上限（秒）：停顿结束后最多晚这么久拍到决策帧。"""
  
-@@ -486,6 +525,38 @@ def _closest_on_segment(
+@@ -486,6 +525,46 @@ def _closest_on_segment(
      return (start.x + t * dx, start.y + t * dy)
  
  
@@ -966,10 +1738,18 @@ index 4870edb..f4b9f19 100644
 +    return _window_title(_foreground_hwnd())
 +
 +
++def _matches_keep_keywords(text: str, keywords: tuple[str, ...]) -> bool:
++    """条目文字是否命中只捡关键词（任一关键词出现在文字里即命中）。"""
++    if not keywords:
++        return True
++    lowered = text.lower()
++    return any(keyword.lower() in lowered for keyword in keywords)
++
++
  class BagelRouteWalker(BagelOperation):
      """按打点顺序执行路线，箱类按类型交互。"""
  
-@@ -493,6 +564,13 @@ class BagelRouteWalker(BagelOperation):
+@@ -493,6 +572,13 @@ class BagelRouteWalker(BagelOperation):
      STATUS_SPAWN_FAILED: str = '出生点识别失败'
      STATUS_CONFIG_INVALID: str = '路线配置无效'
      STATUS_NOT_FOREGROUND: str = '游戏不在前台，已停止'
@@ -983,7 +1763,30 @@ index 4870edb..f4b9f19 100644
      STATUS_DONE: str = '路线走完'
      STATUS_KEYCARD_MISSING: str = '刷卡处显示没有对应门禁卡'
      STATUS_FAIL_SURVEY: str = '失败前补读调查收益'
-@@ -528,6 +606,10 @@ class BagelRouteWalker(BagelOperation):
+@@ -500,9 +586,12 @@ class BagelRouteWalker(BagelOperation):
+     def __init__(
+         self, ctx: ZContext, blueprint_priority: bool = True,
+         route_ref: BagelRouteRef | None = None, keycard_room: str | None = None,
++        keycard_rooms: list[str] | None = None,
+         turn_memory: TurnRatioMemory | None = None,
+         organize_backpack: bool = False,
+         map_layers: list[MapLocator] | None = None,
++        pickup_keep_keywords: tuple[str, ...] = (),
++        pick_all_leftovers: bool = False,
+     ) -> None:
+         """加载出生点清单并准备定位。
+ 
+@@ -518,6 +607,9 @@ class BagelRouteWalker(BagelOperation):
+                 局末由 remember_turn_ratio 记回。None 表示从 1.0 起步、局末不记。
+             organize_backpack: 是否允许在路线最后一个容器的搜查面板内就地整理背包；
+                 正式应用传入 True，路线试跑默认 False。
++            pickup_keep_keywords: 局内只捡名字命中这些关键词的拾取物；空表示全部捡。
++            pick_all_leftovers: 入箱后是否按 F「全部拾取」把容器剩余物品塞进背包；
++                False 时剩余物品留在容器里，不占背包格。
+             map_layers: 调用方已加载的只读地图层，多局共用；None 表示本执行器自己加载。
+                 每层约 6 MiB，23 层合计约 135 MiB，逐局加载会让内存随局数上涨。
+ 
+@@ -528,7 +620,18 @@ class BagelRouteWalker(BagelOperation):
          # 而它的回调闭包引用执行器自身，执行器结束后要等完整垃圾回收才能释放。
          super().__init__(ctx, op_name='贝果-路线执行', timeout_seconds=-1, need_check_game_win=False)
          self.store: BagelRouteStore = BagelRouteStore(self.ctx)
@@ -992,9 +1795,28 @@ index 4870edb..f4b9f19 100644
 +        self._fg_logged_at: float = 0.0
 +        """上次打印失焦日志的时刻；暂停期间每 10 秒记一条。"""
          self.keycard_room: str | None = keycard_room if route_ref is None else None
++        self.keycard_rooms: list[str] = (
++            (list(keycard_rooms) if keycard_rooms else ([keycard_room] if keycard_room else []))
++            if route_ref is None else []
++        )
++        """本轮要开启的房间标识；一局只开识别出生点匹配上的那一个。"""
++        self.keycard_room_used: str | None = None
++        """本局实际开启的房间标识，识别出生点后确定。"""
          """正式运行开房卡模式的目标房间；跑刀与试跑为 None。"""
          try:
-@@ -680,6 +762,18 @@ class BagelRouteWalker(BagelOperation):
+             self.spawns: list[BagelSpawnPoint] = self.store.load_spawns()
+@@ -555,6 +658,10 @@ class BagelRouteWalker(BagelOperation):
+         self.spawn_streak: int = 0
+         """连续得出相同出生点结论的新截图次数。"""
+         self.blueprint_priority: bool = blueprint_priority
++        self.pickup_keep_keywords: tuple[str, ...] = tuple(pickup_keep_keywords)
++        """只捡命中这些关键词的拾取物；空表示全部捡。"""
++        self.pick_all_leftovers: bool = pick_all_leftovers
++        """入箱后是否把容器剩余物品全部塞进背包。"""
+         self.locator: MultiMapLocator = MultiMapLocator(
+             load_map_locators() if map_layers is None else map_layers,
+         )
+@@ -680,6 +787,18 @@ class BagelRouteWalker(BagelOperation):
          """当前是否在冲刺。"""
          self.turning_in_place: bool = False
          """巡航中是否已进入停车等转向；用于 ``WALK_STOP_TURN_ANGLE`` 与 ``WALK_TURN_ANGLE`` 滞回判断。"""
@@ -1013,7 +1835,7 @@ index 4870edb..f4b9f19 100644
          self.last_dodge_at: float | None = None
          """上次点闪避的时刻（monotonic），用于冲刺点闪避的间隔控制。"""
          self.turn_memory: TurnRatioMemory | None = turn_memory
-@@ -755,8 +849,23 @@ class BagelRouteWalker(BagelOperation):
+@@ -755,8 +874,23 @@ class BagelRouteWalker(BagelOperation):
          self.perf.start()
          if not self._game_in_foreground():
              self._release_forward()
@@ -1037,7 +1859,7 @@ index 4870edb..f4b9f19 100644
          result = super()._execute_one_round()
          node_name = '未知' if self._current_node is None else self._current_node.cn
          status = result.status or result.status_display or ''
-@@ -823,12 +932,33 @@ class BagelRouteWalker(BagelOperation):
+@@ -823,12 +957,33 @@ class BagelRouteWalker(BagelOperation):
              return super()._has(area, screen_name)
  
      def _game_in_foreground(self) -> bool:
@@ -1051,10 +1873,10 @@ index 4870edb..f4b9f19 100644
          hwnd = game_win.get_hwnd()
 -        if hwnd is None:
 +        if hwnd is None or not hwnd:
-+            return True
-+        if is_foreground(hwnd):
              return True
 -        return is_foreground(hwnd)
++        if is_foreground(hwnd):
++            return True
 +        try:
 +            fg = ctypes.windll.user32.GetForegroundWindow()
 +        except Exception:
@@ -1074,7 +1896,7 @@ index 4870edb..f4b9f19 100644
  
      # ---------- 定位 ----------
  
-@@ -865,7 +995,53 @@ class BagelRouteWalker(BagelOperation):
+@@ -865,7 +1020,53 @@ class BagelRouteWalker(BagelOperation):
          """
          with self.perf.measure('朝向'):
              _marker_vertices, _marker_edges, sector, _radius, _center = analyze(self.minimap())
@@ -1129,7 +1951,58 @@ index 4870edb..f4b9f19 100644
  
      # ---------- 节点 ----------
  
-@@ -2062,8 +2238,9 @@ class BagelRouteWalker(BagelOperation):
+@@ -938,14 +1139,22 @@ class BagelRouteWalker(BagelOperation):
+                     self.STATUS_SPAWN_FAILED,
+                     data=f'角色在{spawn.name}，路线「{route.name}」绑定的是{bound}',
+                 )
+-        elif self.keycard_room is not None:
+-            try:
+-                route = self.store.keycard_route(self.keycard_room, spawn.spawn_id)
+-            except BagelRouteConfigError as error:
+-                log.error('贝果开房卡房间 %s 的路线配置无效：%s', self.keycard_room, error)
+-                return self.round_fail(self.STATUS_CONFIG_INVALID, data=str(error))
++        elif self.keycard_rooms:
++            route = None
++            for room_id in self.keycard_rooms:
++                try:
++                    candidate = self.store.keycard_route(room_id, spawn.spawn_id)
++                except BagelRouteConfigError as error:
++                    log.error('贝果开房卡房间 %s 的路线配置无效：%s', room_id, error)
++                    return self.round_fail(self.STATUS_CONFIG_INVALID, data=str(error))
++                if candidate is not None:
++                    route = candidate
++                    self.keycard_room_used = room_id
++                    log.info('贝果开房卡：出生点 %s 匹配房间 %s', spawn.name, room_id)
++                    break
+             if route is None:
+-                log.info('贝果出生点识别：%s 没有开启去房间 %s 的入口段', spawn.name, self.keycard_room)
++                rooms = '、'.join(self.keycard_rooms)
++                log.info('贝果出生点识别：%s 没有任何已开启房间的入口段（%s）', spawn.name, rooms)
+                 return self.round_fail(self.STATUS_ANCHOR_MISS)
+         else:
+             try:
+@@ -1668,6 +1877,10 @@ class BagelRouteWalker(BagelOperation):
+             self.pickup_text = None
+             self.pickup_taps = 0
+             return False
++        if self.pickup_keep_keywords and not _matches_keep_keywords(text, self.pickup_keep_keywords):
++            self.pickup_ignored.add(text)
++            log.info('贝果拾取：「%s」不在只捡关键词里，跳过', text)
++            return False
+         return True
+ 
+     def _tap_pickup(self, text: str) -> None:
+@@ -1865,6 +2078,9 @@ class BagelRouteWalker(BagelOperation):
+     @operation_node(name='拾取剩余')
+     def pick_all_rest(self) -> OperationRoundResult:
+         """用新截图确认搜查面板有剩余物品且可拾取，点按 F 并轮询结果格清空。"""
++        if not self.pick_all_leftovers:
++            log.info('贝果拾取：未开启「全部拾取」，容器剩余物品留在箱内，不塞进背包')
++            return self.round_success('已跳过全部拾取')
+         now = time.monotonic()
+         if self._pick_all_sent_at is not None:
+             elapsed = now - self._pick_all_sent_at
+@@ -2062,8 +2278,9 @@ class BagelRouteWalker(BagelOperation):
              self.electronic_small_steps = True
              self._release_forward()
              log.info(
@@ -1141,7 +2014,7 @@ index 4870edb..f4b9f19 100644
              )
          if self.last_input_frame is not None and self.last_screenshot_time <= self.last_input_frame:
              return self.round_wait('等待动作后的新截图', wait=0.05)
-@@ -2097,6 +2274,18 @@ class BagelRouteWalker(BagelOperation):
+@@ -2097,6 +2314,18 @@ class BagelRouteWalker(BagelOperation):
          prompt = self._prompt_stop(distance)
          if prompt is not None:
              return prompt
@@ -1160,7 +2033,7 @@ index 4870edb..f4b9f19 100644
          if point.kind == KEYCARD_DOOR and self.card_probe_step is not None:
              # 试探中不再按坐标逼近，否则会被拉回门板正中，试探白做。
              return self._probe_card_reader()
-@@ -2298,6 +2487,53 @@ class BagelRouteWalker(BagelOperation):
+@@ -2298,6 +2527,53 @@ class BagelRouteWalker(BagelOperation):
          self.input_worker.submit_turn(None)
          return self.round_wait(f'未识别到朝向，停下等待（{missed:.1f}s）', wait=0.1)
  
@@ -1214,7 +2087,7 @@ index 4870edb..f4b9f19 100644
      def _cruise(
          self, point: BagelRoutePoint, position: tuple[float, float],
      ) -> OperationRoundResult:
-@@ -2327,6 +2563,9 @@ class BagelRouteWalker(BagelOperation):
+@@ -2327,6 +2603,9 @@ class BagelRouteWalker(BagelOperation):
              # 大偏差：松键停车等转向线程转到位再走。
              self.turning_in_place = True
              self._release_forward()
@@ -1224,7 +2097,7 @@ index 4870edb..f4b9f19 100644
              return self.round_wait(f'停车等转向 {angle_diff:.0f}度')
          self.turning_in_place = False
          stuck = self._check_stuck(position, point, controller_angle)
-@@ -2453,7 +2692,7 @@ class BagelRouteWalker(BagelOperation):
+@@ -2453,7 +2732,7 @@ class BagelRouteWalker(BagelOperation):
              return self.round_wait('前进停顿中', wait=min(remaining, STEP_REST_POLL))
          return None
  
@@ -1233,7 +2106,7 @@ index 4870edb..f4b9f19 100644
          """近距离移动：不停下来对准，直接短按前进。
  
          3px 内不再转向：这么近的距离，目标方向完全由 1px 级的坐标抖动
-@@ -2462,6 +2701,10 @@ class BagelRouteWalker(BagelOperation):
+@@ -2462,6 +2741,10 @@ class BagelRouteWalker(BagelOperation):
  
          方向真的偏了也不怕：走一步后距离变大，自然回到慢步分支去对准。
          超时由调用方 _check_small_step_timeout 管，这里只负责迈步。
@@ -1244,7 +2117,7 @@ index 4870edb..f4b9f19 100644
          """
          ready = self._prepare_forward_step()
          if ready is not None:
-@@ -2469,10 +2712,13 @@ class BagelRouteWalker(BagelOperation):
+@@ -2469,10 +2752,13 @@ class BagelRouteWalker(BagelOperation):
          limited = self._fail_if_action_limit()
          if limited is not None:
              return limited
@@ -1260,7 +2133,7 @@ index 4870edb..f4b9f19 100644
  
      def _check_small_step_timeout(self) -> OperationRoundResult | None:
          """碎步段超时检查：3px 内迈步超过 5 秒还没贴到就跳过这个点（房卡门判失败）。
-@@ -2543,6 +2789,9 @@ class BagelRouteWalker(BagelOperation):
+@@ -2543,6 +2829,9 @@ class BagelRouteWalker(BagelOperation):
          if stop_turn:
              # 大偏差：松键停车等转向线程转到位，不短按前进。
              self._release_forward()
@@ -1301,3 +2174,52 @@ index b25d23e..0c116a2 100644
              f'用时 {format_duration(self._elapsed())}'
          )
          lines.append(self._income_text())
+diff --git a/vision/item_vision.py b/vision/item_vision.py
+index 59706bc..038f702 100644
+--- a/vision/item_vision.py
++++ b/vision/item_vision.py
+@@ -27,6 +27,9 @@ ITEM_TYPE_TACTIC: str = '战术道具'
+ # 特殊奖励专指使用切面钻石角标的菲林、零号业绩，不代表全部撤离奖励。
+ ITEM_TYPE_SPECIAL_REWARD: str = '特殊奖励'
+ QUALITY_UNKNOWN: str = '?'
++ITEM_TYPE_KEYCARD: str = '门禁卡'
++PROTECTED_TYPES: frozenset[str] = frozenset({ITEM_TYPE_KEYCARD})
++"""整理与入箱时永不替换掉的类型：门禁卡要留到刷卡，不能被更优物品顶掉。"""
+ STACKABLE_TYPES: frozenset[str] = frozenset({ITEM_TYPE_MATERIAL, ITEM_TYPE_TACTIC})
+ """允许叠放的类型；其他类型游戏是否允许叠放尚未确认，一律不叠。"""
+ 
+@@ -261,14 +264,16 @@ def choose_store_action(
+     if safe_empty:
+         return StoreChoice(ACTION_FILL, candidate.index, safe_empty[0], candidate)
+     if safes:
+-        worst = min(
+-            safes,
+-            key=lambda mark: (*mark.priority(blueprint_priority), mark.index),
+-        )
+-        if is_strictly_better(candidate, worst, blueprint_priority):
+-            return StoreChoice(ACTION_SWAP, candidate.index, worst.index, candidate)
+-        if quantity is not None:
+-            return _swap_by_quantity(ordered, safes, worst.priority(blueprint_priority), blueprint_priority, quantity)
++        replaceable = [mark for mark in safes if mark.item_type not in PROTECTED_TYPES]
++        if replaceable:
++            worst = min(
++                replaceable,
++                key=lambda mark: (*mark.priority(blueprint_priority), mark.index),
++            )
++            if is_strictly_better(candidate, worst, blueprint_priority):
++                return StoreChoice(ACTION_SWAP, candidate.index, worst.index, candidate)
++            if quantity is not None:
++                return _swap_by_quantity(ordered, replaceable, worst.priority(blueprint_priority), blueprint_priority, quantity)
+     return None
+ 
+ 
+@@ -301,7 +306,8 @@ def _swap_by_quantity(
+         return None
+     tied_safes = [
+         mark for mark in safes
+-        if mark.item_type in STACKABLE_TYPES and mark.priority(blueprint_priority) == level
++        if mark.item_type in STACKABLE_TYPES and mark.item_type not in PROTECTED_TYPES
++        and mark.priority(blueprint_priority) == level
+     ]
+     known_safes = [(count, mark) for mark in tied_safes if (count := quantity(mark)) is not None]
+     if not known_safes:
