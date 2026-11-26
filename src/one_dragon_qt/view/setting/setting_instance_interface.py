@@ -322,7 +322,7 @@ class SettingInstanceInterface(VerticalScrollInterface):
             icon=FluentIcon.FIT_PAGE,
             title="自定义窗口标题",
             extra_btn=self.custom_win_title_input,
-            password_hash=base64.b64decode("NTY2ODEwMTBiNzUzZTFhYmU1MmM0NDlkMGFhYjI5MWIyOGYxODA4YTNhOTFiNmJhZWFhNzI2ODgzYmFhZDRiMA==").decode('utf-8'),
+            require_password=False,
         )
         self.custom_win_title_opt.value_changed.connect(self._update_custom_win_title)
         self.custom_win_title_input.editingFinished.connect(self._update_custom_win_title)
