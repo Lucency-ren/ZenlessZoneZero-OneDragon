@@ -1,5 +1,5 @@
 diff --git a/app.py b/app.py
-index c025354..699b056 100644
+index c025354..b456d41 100644
 --- a/app.py
 +++ b/app.py
 @@ -10,6 +10,8 @@ from one_dragon.base.operation.operation_node import operation_node
@@ -19,35 +19,86 @@ index c025354..699b056 100644
      is_bagel_result,
      release_flow_inputs,
  )
-@@ -100,6 +103,8 @@ class BagelApp(ZApplication):
+@@ -58,6 +61,18 @@ if TYPE_CHECKING:
+     from .run_record import BagelRunRecord
+     from .stats import BagelRound
+ 
++_ENTER_STALL_MARKERS: tuple[str, ...] = (
++    '零投资入场未生效',
++    '未知入场确认',
++    '入场确认持续未消失',
++    '无法确认零投资',
++    '未核对',
++)
++"""入场卡住的状态文案片段：命中就关游戏重开再入场，不再直接停机。"""
++
++_ENTER_STALL_RETRIES: int = 2
++"""同一次任务里入场卡住最多重开游戏几次；用尽后按原逻辑停止并保留现场。"""
++
+ 
+ def collect_round_garbage() -> None:
+     """局间做一次完整垃圾回收，释放上一局留在循环引用里的截图和操作。
+@@ -100,6 +115,10 @@ class BagelApp(ZApplication):
          self.defeat_rounds: int = 0
          self.consecutive_failures: int = 0
          """全局连续失败局数；任一局成功入仓后清零。"""
 +        self.limit_restarts: int = 0
 +        """本次任务因连续失败达到上限而重启游戏的次数。"""
++        self.enter_stalls: int = 0
++        """本次任务入场卡住（零投资未生效/未知确认）后关游戏重开的次数。"""
          self.route_failures: dict[str, int] = {}
          """各路线的连续失败局数，键为路线引用；只有该路线成功入仓才清零。"""
          self.failure_retry_pending: bool = False
-@@ -248,6 +253,18 @@ class BagelApp(ZApplication):
+@@ -126,6 +145,8 @@ class BagelApp(ZApplication):
+         """本局的地图、出生点和执行的路线；没定位或没跑路线时为 None。"""
+         self._route_rounds: int = 0
+         """本次任务写入的路线数据记录局数；为 0 时不输出汇总表。"""
++        self._run_route_records: list[BagelRouteRecord] = []
++        """本次运行写入的路线记录；推送里的局数与成功率只按它统计，不掺历史。"""
+         self._route_reported: bool = False
+         self._card_in_safe: bool = False
+         """开房卡模式：安全箱里是否还有没用掉的门禁卡。入场核对到 1 件时置真，刷开门或入仓后置假。"""
+@@ -218,7 +239,7 @@ class BagelApp(ZApplication):
+             return
+         try:
+             route = self._round_route
+-            self._route_recorder.append(BagelRouteRecord(
++            record = BagelRouteRecord(
+                 ended_at=now_iso(),
+                 instance=self.ctx.current_instance_idx,
+                 map_id=self._round_map_id,
+@@ -231,7 +252,9 @@ class BagelApp(ZApplication):
+                 seconds=round(finished.seconds, 1),
+                 income=finished.income,
+                 red=stats.red_counts(finished.items),
+-            ))
++            )
++            self._route_recorder.append(record)
++            self._run_route_records.append(record)
+             self._route_rounds += 1
+         except Exception:
+             log.error('记录贝果路线数据失败', exc_info=True)
+@@ -248,6 +271,19 @@ class BagelApp(ZApplication):
          except Exception:
              log.error('输出贝果路线数据汇总失败', exc_info=True)
  
 +    def _route_push_text(self) -> str | None:
-+        """推送用的路线统计：每条路线打了多少局、成功率多少。只读统计，出错不影响推送。"""
++        """推送用的路线统计：本次运行跑起来多少局、直接重开多少局。只读本次记录，出错不影响推送。"""
 +        try:
-+            catalog = BagelRouteStore(self.ctx).load_catalog()
-+            lines = route_stats.push_lines(self._route_recorder.load(), catalog)
++            if not self._run_route_records:
++                return None
++            lines = route_stats.push_lines(self._run_route_records)
 +        except Exception:
 +            log.error('生成贝果路线统计推送文本失败', exc_info=True)
 +            return None
 +        if not lines:
 +            return None
-+        return '\n'.join([f'路线统计（近 {route_stats.RETENTION_DAYS} 天）', *lines])
++        return '\n'.join(['路线统计（本次运行）', *lines])
 +
      def _push_summary(self, result: OperationResult) -> None:
          """任务结束推送收益摘要，按本应用的节点通知设置发送；用户手动停止不推送。
  
-@@ -255,8 +272,6 @@ class BagelApp(ZApplication):
+@@ -255,8 +291,6 @@ class BagelApp(ZApplication):
          所以在这里按节点通知的同一套规则发送：关闭不发，仅失败时只在异常停止时发，
          合并时放进通知池，由框架在应用结束时一起发出。
          """
@@ -56,7 +107,7 @@ index c025354..699b056 100644
          if not self.ctx.notify_config.enable_notify or not self.ctx.run_context.is_app_need_notify(self.app_id):
              return
          mode = self.ctx.notify_config.get_app_detail_mode(self.app_id)
-@@ -266,11 +281,17 @@ class BagelApp(ZApplication):
+@@ -266,11 +300,17 @@ class BagelApp(ZApplication):
              return
          # 失败原因常带「；」后的细节，推送只取第一段。
          stop_reason = None if result.success else str(result.status).split('；')[0]
@@ -74,7 +125,7 @@ index c025354..699b056 100644
          if mode == NotifyDetailMode.MERGE.value.value:
              self.ctx.run_context.notify_pool.add(content=content)
          else:
-@@ -300,7 +321,9 @@ class BagelApp(ZApplication):
+@@ -300,7 +340,9 @@ class BagelApp(ZApplication):
          self.rounds_since_sell = 0
          self.empty_rounds = 0
          self.defeat_rounds = 0
@@ -84,7 +135,15 @@ index c025354..699b056 100644
          self.route_failures = {}
          self.failure_retry_pending = False
          self.failure_reason = None
-@@ -332,6 +355,21 @@ class BagelApp(ZApplication):
+@@ -313,6 +355,7 @@ class BagelApp(ZApplication):
+         self._round_survey = 0
+         self._reset_round_route()
+         self._route_rounds = 0
++        self._run_route_records = []
+         self._route_reported = False
+         self._card_in_safe = False
+         self._round_card_swiped = False
+@@ -332,6 +375,21 @@ class BagelApp(ZApplication):
          self._round_pickup_presses = 0
          self._round_needs_organize = False
  
@@ -106,7 +165,7 @@ index c025354..699b056 100644
      def _count_round_failure(self) -> None:
          """失败局计入全局连续失败；已执行路线时同时计入该路线。"""
          self.consecutive_failures += 1
-@@ -342,6 +380,7 @@ class BagelApp(ZApplication):
+@@ -342,6 +400,7 @@ class BagelApp(ZApplication):
      def _clear_round_failures(self) -> None:
          """成功入仓清零全局计数和本局路线的计数；其他路线的计数保留。"""
          self.consecutive_failures = 0
@@ -114,7 +173,25 @@ index c025354..699b056 100644
          if self._round_route is not None:
              self.route_failures.pop(str(self._round_route.ref), None)
  
-@@ -818,8 +857,17 @@ class BagelApp(ZApplication):
+@@ -499,6 +558,17 @@ class BagelApp(ZApplication):
+             # 入场核对过安全箱正好 1 件，按带着门禁卡处理。
+             self._card_in_safe = True
+             self._buy_card_attempted = False
++        if result.success:
++            self.enter_stalls = 0
++        elif self._is_enter_stall(result.status):
++            # 零投资入场卡死这类状态靠重开游戏能自愈，先自救再考虑停机。
++            if (self.enter_stalls < _ENTER_STALL_RETRIES
++                    and self._restart_game(f'入场卡住（{result.status}）')):
++                self.enter_stalls += 1
++                log.warning('贝果入场卡住：%s；已关游戏重开并重新入场（第 %s/%s 次）',
++                            result.status, self.enter_stalls, _ENTER_STALL_RETRIES)
++                return self.round_retry('入场卡住已重开游戏，重新入场', wait=2)
++            log.warning('贝果入场卡住：%s；重开游戏次数已用尽，按原逻辑停止并保留现场', result.status)
+         if retrying_failure and not result.success:
+             return self._finish_failed_round(result, '额外入场')
+         return self.round_by_op_result(result, wait=1)
+@@ -818,8 +888,17 @@ class BagelApp(ZApplication):
              else previous.status if previous is not None else '局内失败'
          )
          release_flow_inputs(self.ctx)
@@ -134,7 +211,7 @@ index c025354..699b056 100644
          self._record_round_income(read_hud=False)
          path = screenshot.save_screenshot(self.ctx, self.last_screenshot, 'BagelApp')
          self.failure_history.append({
-@@ -829,8 +877,9 @@ class BagelApp(ZApplication):
+@@ -829,8 +908,9 @@ class BagelApp(ZApplication):
              'route': str(self._round_route.ref) if self._round_route is not None else None,
              'route_failures': self._round_route_failures(),
          })
@@ -146,7 +223,7 @@ index c025354..699b056 100644
          usage.log_screenshot(path)
          return self._finish_failed_round(BagelExit(self.ctx).execute(), '退出')
  
-@@ -892,8 +941,46 @@ class BagelApp(ZApplication):
+@@ -892,8 +972,74 @@ class BagelApp(ZApplication):
              return f'连续失败 {self.consecutive_failures} 局'
          if route is not None and self._round_route_failures() >= limit:
              return f'路线「{route.name}」连续失败 {self._round_route_failures()} 局'
@@ -190,10 +267,38 @@ index c025354..699b056 100644
 +        log.info('贝果已重开游戏并回到大世界，连续失败与连续阵亡计数清零，继续入场')
 +        return self.round_success('重开游戏后继续入场')
 +
++    def _restart_game(self, reason: str) -> bool:
++        """关掉游戏重新启动并回到大世界；用于入场卡死这类靠重开才能自愈的状态。
++
++        Args:
++            reason: 触发重开的原因，只写日志。
++
++        Returns:
++            True 表示游戏已经重开并进入大世界，可以立刻重新入场。
++        """
++        log.warning('贝果%s：关闭游戏并重新启动，第 %s 次重开', reason, self.enter_stalls + 1)
++        self.ctx.controller.close_game()
++        time.sleep(3)
++        opened = execute_foreign_operation(OpenGame(self.ctx))
++        if not opened.success:
++            log.error('贝果重开游戏失败：%s', opened.status)
++            return False
++        entered = execute_foreign_operation(EnterGame(self.ctx))
++        if not entered.success:
++            log.error('贝果重开后进入游戏失败：%s', entered.status)
++            return False
++        return True
++
++    @staticmethod
++    def _is_enter_stall(status: object) -> bool:
++        """入场阶段卡死、重开游戏能解决的状态；其余失败照旧停止。"""
++        text = str(status)
++        return any(marker in text for marker in _ENTER_STALL_MARKERS)
++
      @node_from(from_name='失败局结算仓库')
      @operation_node(name='判断连续失败次数', screenshot_before_round=False)
      def decide_defeat_rounds(self) -> OperationRoundResult:
-@@ -919,6 +1006,9 @@ class BagelApp(ZApplication):
+@@ -919,6 +1065,9 @@ class BagelApp(ZApplication):
                  return self.round_success(self.STATUS_CARDS_OUT)
              self.failure_retry_pending = True
              return self.round_success('继续入场')
@@ -680,7 +785,7 @@ index 0bfab03..cfc82eb 100644
  
  def wait_foreground(hwnd: int, timeout: float, stop: Event | None = None) -> bool:
 diff --git a/route/route_stats.py b/route/route_stats.py
-index 2d2fa8c..742021d 100644
+index 2d2fa8c..adcabc9 100644
 --- a/route/route_stats.py
 +++ b/route/route_stats.py
 @@ -18,6 +18,7 @@ from one_dragon.utils.log_utils import log
@@ -691,82 +796,70 @@ index 2d2fa8c..742021d 100644
      OUTCOME_SUCCESS,
      OUTCOME_UNSUPPORTED,
      format_duration,
-@@ -204,6 +205,73 @@ def extra_hourly(income: float, seconds: float, restart_seconds: float | None) -
+@@ -204,6 +205,61 @@ def extra_hourly(income: float, seconds: float, restart_seconds: float | None) -
      return income / (seconds - restart_seconds) * 3600
  
  
-+PUSH_LINE_LIMIT: int = 12
-+"""推送里最多列多少条路线；超出的省略并注明条数，完整表仍在日志里。"""
++def push_lines(records: list[BagelRouteRecord]) -> list[str]:
++    """推送用的路线汇总，只要两行：跑起来的局数、直接重开的局数。
 +
-+
-+def push_lines(
-+    records: list[BagelRouteRecord], catalog: BagelRouteCatalog, limit: int = PUSH_LINE_LIMIT,
-+) -> list[str]:
-+    """推送用的路线汇总：每个出生点一行「路线：打了 N 局 · 成功率 X%」。
-+
-+    只列当前开启路线（本版本）在保留期内有记录的出生点，没记录的不占行；
-+    超过 ``limit`` 条的省略并注明条数，完整表见日志。
++    有 ``route_id`` 的记录算「成功运行」（真的走了路线，胜负另算），
++    没有 ``route_id`` 的是出生点没有可执行路线、入场后直接重开的空转局。
++    逐条路线的明细仍然由 :func:`report_lines` 写日志。
 +
 +    Args:
-+        records: 保留期内的记录。
-+        catalog: 当前路线设置；只统计各出生点当前开启路线的当前版本。
-+        limit: 最多列出多少条路线。
++        records: 本次运行的记录。
 +    """
-+    lines: list[str] = []
-+    omitted = 0
-+    map_ids = sorted({record.map_id for record in records if record.map_id is not None})
-+    for map_id in map_ids:
-+        map_records = [record for record in records if record.map_id == map_id]
-+        restarts = [record for record in map_records if record.outcome == OUTCOME_UNSUPPORTED]
-+        for spawn in catalog.spawns:
-+            if spawn.map_id != map_id:
-+                continue
-+            text = _push_spawn_text(spawn, map_records, restarts, catalog)
-+            if text is None:
-+                continue
-+            if len(lines) >= limit:
-+                omitted += 1
-+                continue
-+            lines.append(text)
-+    if omitted:
-+        lines.append(f'…另有 {omitted} 条路线，明细见日志')
-+    return lines
++    if not records:
++        return []
++    runs = sum(1 for record in records if record.route_id is not None)
++    restarts = len(records) - runs
++    return [f'成功运行：{runs} 局', f'直接重开：{restarts} 局']
 +
 +
 +def _push_spawn_text(spawn, map_records: list[BagelRouteRecord], restarts: list[BagelRouteRecord],
 +                     catalog: BagelRouteCatalog) -> str | None:
-+    """一个出生点的一行推送文本；该出生点在保留期内没有记录时返回 None。"""
-+    ref = catalog.active_ref(spawn.spawn_id)
-+    route = catalog.route(ref) if ref is not None else None
-+    if route is None:
-+        own = [record for record in restarts if record.spawn_id == spawn.spawn_id]
-+        if not own:
-+            return None
-+        return f'{spawn.name} · 直接重开：打了 {len(own)} 局'
-+    version = route_version(route)
-+    rows = [
-+        record for record in map_records
-+        if record.spawn_id == spawn.spawn_id and record.route_source == route.source
-+        and record.route_id == route.route_id and record.route_version == version
-+    ]
-+    if not rows:
++    """一个出生点的一行推送文本；该出生点在本次运行里没有记录时返回 None。
++
++    按记录里实际跑过的路线分组，而不是查 ``active_routes``：开房卡模式的记录里
++    路线是「入口段+房间段」的拼接名，``active_ref`` 拿不到，之前会整行漏掉。
++    """
++    own = [record for record in map_records if record.spawn_id == spawn.spawn_id]
++    if not own:
 +        return None
-+    success = sum(1 for record in rows if record.outcome == OUTCOME_SUCCESS)
-+    text = f'{spawn.name} · {route.name}：打了 {len(rows)} 局 · 成功率 {success / len(rows):.0%}'
-+    deaths = sum(1 for record in rows if record.outcome == OUTCOME_DEFEATED)
-+    if deaths:
-+        text += f' · 阵亡 {deaths}'
-+    known = [record for record in rows if record.income is not None]
-+    if known:
-+        text += f' · 每局 {format_value(round(_mean([float(record.income or 0) for record in known])))}'
-+    return text
++    routes: dict[str, list[BagelRouteRecord]] = {}
++    idle = 0
++    for record in own:
++        if record.route_id is None:
++            idle += 1
++            continue
++        routes.setdefault(record.route_id, []).append(record)
++    parts: list[str] = []
++    for route_id, rows in sorted(routes.items(), key=lambda item: -len(item[1])):
++        name = rows[0].route_name or route_id
++        if '+' in name:
++            name = f'{name.split("+", 1)[0].strip()}＋房间'
++        success = sum(1 for record in rows if record.outcome == OUTCOME_SUCCESS)
++        piece = f'{name}：打了 {len(rows)} 局 · 成功率 {success / len(rows):.0%}'
++        deaths = sum(1 for record in rows if record.outcome == OUTCOME_DEFEATED)
++        if deaths:
++            piece += f' · 阵亡 {deaths}'
++        known = [record for record in rows if record.income is not None]
++        if known:
++            piece += f' · 每局 {format_value(round(_mean([float(record.income or 0) for record in known])))}'
++        parts.append(piece)
++    if idle:
++        parts.append(f'直接重开：打了 {idle} 局')
++    if not parts:
++        return None
++    return f'{spawn.name} · ' + '；'.join(parts)
 +
 +
  def report_lines(records: list[BagelRouteRecord], catalog: BagelRouteCatalog) -> list[str]:
      """按地图、出生点生成汇总表，每行一条日志。
  
 diff --git a/route/route_walker.py b/route/route_walker.py
-index 4870edb..08b860b 100644
+index 4870edb..f4b9f19 100644
 --- a/route/route_walker.py
 +++ b/route/route_walker.py
 @@ -19,6 +19,7 @@
@@ -777,7 +870,39 @@ index 4870edb..08b860b 100644
  import re
  import time
  from math import atan2, cos, degrees, hypot, radians, sin
-@@ -224,6 +225,27 @@ SMALL_STEP_PRESS: float = 0.10
+@@ -174,13 +175,30 @@ NEAR_STOP_TURN_ANGLE: float = 60.0
+ BOX_SMALL_STEP_RADIUS: float = 3.0
+ """箱子碎步半径：进到它以内用碎步（用户给定 3px）。"""
+ 
+-ELECTRONIC_SMALL_STEP_RADIUS: float = 15.0
++ELECTRONIC_SMALL_STEP_RADIUS: float = 22.0
+ """电子保险箱短步半径：进入后保持短步，直到当前目标结束。
+ 
+ 只用于雅努斯幻境的电子保险箱：那一个箱子要碎步才贴得准。其他地图的电子
+ 保险箱和普通箱子一样慢步接近、3px 内碎步。
++
++半径从 15px 放宽到 22px：贴得太近会刷怪，从更远处就开始收步更安全。
+ """
+ 
++ELECTRONIC_CREEP_RADIUS: float = 12.0
++"""电子保险箱蠕动半径：进到 12px 以内改用 0.05 秒的极短按压。"""
++
++ELECTRONIC_CREEP_PRESS: float = 0.05
++"""蠕动按压时长：约 0.3px 一步，走过去也不会撞到箱子上。"""
++
++ELECTRONIC_TINY_RADIUS: float = 8.0
++"""电子保险箱极细半径：8px 以内再降到 0.03 秒，约 0.15px 一步。"""
++
++ELECTRONIC_TINY_PRESS: float = 0.03
++"""极细按压时长：提示出现前最后几像素用这个，尽量不触发刷怪。"""
++
++ELECTRONIC_STEP_PAUSE: float = 0.15
++"""蠕动步之间的停顿：挪一下就等一下，让画面和提示先刷新。"""
++
+ BOX_WAIT_RADIUS: float = 1.9
+ """箱子原地等待半径：距离小于 1.9px 就停步原地等提示（用户给定）。
+ 
+@@ -224,6 +242,27 @@ SMALL_STEP_PRESS: float = 0.10
  实测按 0.05、0.08 秒每步都约 0.4px，0.12 秒约 0.8px；0.10 秒落在两档之间，
  尚未单独标定，按线性推算约 0.6px。"""
  
@@ -805,7 +930,7 @@ index 4870edb..08b860b 100644
  STEP_REST_POLL: float = 0.03
  """停顿期间主线的轮询上限（秒）：停顿结束后最多晚这么久拍到决策帧。"""
  
-@@ -486,6 +508,38 @@ def _closest_on_segment(
+@@ -486,6 +525,38 @@ def _closest_on_segment(
      return (start.x + t * dx, start.y + t * dy)
  
  
@@ -844,7 +969,7 @@ index 4870edb..08b860b 100644
  class BagelRouteWalker(BagelOperation):
      """按打点顺序执行路线，箱类按类型交互。"""
  
-@@ -493,6 +547,13 @@ class BagelRouteWalker(BagelOperation):
+@@ -493,6 +564,13 @@ class BagelRouteWalker(BagelOperation):
      STATUS_SPAWN_FAILED: str = '出生点识别失败'
      STATUS_CONFIG_INVALID: str = '路线配置无效'
      STATUS_NOT_FOREGROUND: str = '游戏不在前台，已停止'
@@ -858,7 +983,7 @@ index 4870edb..08b860b 100644
      STATUS_DONE: str = '路线走完'
      STATUS_KEYCARD_MISSING: str = '刷卡处显示没有对应门禁卡'
      STATUS_FAIL_SURVEY: str = '失败前补读调查收益'
-@@ -528,6 +589,10 @@ class BagelRouteWalker(BagelOperation):
+@@ -528,6 +606,10 @@ class BagelRouteWalker(BagelOperation):
          # 而它的回调闭包引用执行器自身，执行器结束后要等完整垃圾回收才能释放。
          super().__init__(ctx, op_name='贝果-路线执行', timeout_seconds=-1, need_check_game_win=False)
          self.store: BagelRouteStore = BagelRouteStore(self.ctx)
@@ -869,7 +994,7 @@ index 4870edb..08b860b 100644
          self.keycard_room: str | None = keycard_room if route_ref is None else None
          """正式运行开房卡模式的目标房间；跑刀与试跑为 None。"""
          try:
-@@ -680,6 +745,18 @@ class BagelRouteWalker(BagelOperation):
+@@ -680,6 +762,18 @@ class BagelRouteWalker(BagelOperation):
          """当前是否在冲刺。"""
          self.turning_in_place: bool = False
          """巡航中是否已进入停车等转向；用于 ``WALK_STOP_TURN_ANGLE`` 与 ``WALK_TURN_ANGLE`` 滞回判断。"""
@@ -888,7 +1013,7 @@ index 4870edb..08b860b 100644
          self.last_dodge_at: float | None = None
          """上次点闪避的时刻（monotonic），用于冲刺点闪避的间隔控制。"""
          self.turn_memory: TurnRatioMemory | None = turn_memory
-@@ -755,8 +832,23 @@ class BagelRouteWalker(BagelOperation):
+@@ -755,8 +849,23 @@ class BagelRouteWalker(BagelOperation):
          self.perf.start()
          if not self._game_in_foreground():
              self._release_forward()
@@ -912,7 +1037,7 @@ index 4870edb..08b860b 100644
          result = super()._execute_one_round()
          node_name = '未知' if self._current_node is None else self._current_node.cn
          status = result.status or result.status_display or ''
-@@ -823,12 +915,33 @@ class BagelRouteWalker(BagelOperation):
+@@ -823,12 +932,33 @@ class BagelRouteWalker(BagelOperation):
              return super()._has(area, screen_name)
  
      def _game_in_foreground(self) -> bool:
@@ -949,7 +1074,7 @@ index 4870edb..08b860b 100644
  
      # ---------- 定位 ----------
  
-@@ -865,7 +978,53 @@ class BagelRouteWalker(BagelOperation):
+@@ -865,7 +995,53 @@ class BagelRouteWalker(BagelOperation):
          """
          with self.perf.measure('朝向'):
              _marker_vertices, _marker_edges, sector, _radius, _center = analyze(self.minimap())
@@ -1004,7 +1129,38 @@ index 4870edb..08b860b 100644
  
      # ---------- 节点 ----------
  
-@@ -2298,6 +2457,53 @@ class BagelRouteWalker(BagelOperation):
+@@ -2062,8 +2238,9 @@ class BagelRouteWalker(BagelOperation):
+             self.electronic_small_steps = True
+             self._release_forward()
+             log.info(
+-                '贝果电子保险箱进入短步阶段：距离 %.1fpx，半径 %.0fpx，按压 %.2fs',
+-                distance, ELECTRONIC_SMALL_STEP_RADIUS, SMALL_STEP_PRESS,
++                '贝果电子保险箱进入短步阶段：距离 %.1fpx，短步半径 %.0fpx（蠕动 %.0fpx/%.0fpx），按压 %.2fs',
++                distance, ELECTRONIC_SMALL_STEP_RADIUS,
++                ELECTRONIC_CREEP_RADIUS, ELECTRONIC_TINY_RADIUS, SMALL_STEP_PRESS,
+             )
+         if self.last_input_frame is not None and self.last_screenshot_time <= self.last_input_frame:
+             return self.round_wait('等待动作后的新截图', wait=0.05)
+@@ -2097,6 +2274,18 @@ class BagelRouteWalker(BagelOperation):
+         prompt = self._prompt_stop(distance)
+         if prompt is not None:
+             return prompt
++        if (
++            self.electronic_small_steps
++            and BOX_WAIT_RADIUS <= distance <= ELECTRONIC_CREEP_RADIUS
++        ):
++            # 电子保险箱贴到 12px 以内就切成蠕动：越近越短，挪一下停一下，
++            # 别一次冲上去贴着箱子把怪引出来。提示一出现就走上面的 prompt_stop。
++            timeout = self._check_small_step_timeout()
++            if timeout is not None:
++                return timeout
++            if distance <= ELECTRONIC_TINY_RADIUS:
++                return self._short_step(ELECTRONIC_TINY_PRESS)
++            return self._short_step(ELECTRONIC_CREEP_PRESS)
+         if point.kind == KEYCARD_DOOR and self.card_probe_step is not None:
+             # 试探中不再按坐标逼近，否则会被拉回门板正中，试探白做。
+             return self._probe_card_reader()
+@@ -2298,6 +2487,53 @@ class BagelRouteWalker(BagelOperation):
          self.input_worker.submit_turn(None)
          return self.round_wait(f'未识别到朝向，停下等待（{missed:.1f}s）', wait=0.1)
  
@@ -1058,7 +1214,7 @@ index 4870edb..08b860b 100644
      def _cruise(
          self, point: BagelRoutePoint, position: tuple[float, float],
      ) -> OperationRoundResult:
-@@ -2327,6 +2533,9 @@ class BagelRouteWalker(BagelOperation):
+@@ -2327,6 +2563,9 @@ class BagelRouteWalker(BagelOperation):
              # 大偏差：松键停车等转向线程转到位再走。
              self.turning_in_place = True
              self._release_forward()
@@ -1068,7 +1224,43 @@ index 4870edb..08b860b 100644
              return self.round_wait(f'停车等转向 {angle_diff:.0f}度')
          self.turning_in_place = False
          stuck = self._check_stuck(position, point, controller_angle)
-@@ -2543,6 +2752,9 @@ class BagelRouteWalker(BagelOperation):
+@@ -2453,7 +2692,7 @@ class BagelRouteWalker(BagelOperation):
+             return self.round_wait('前进停顿中', wait=min(remaining, STEP_REST_POLL))
+         return None
+ 
+-    def _short_step(self) -> OperationRoundResult:
++    def _short_step(self, press: float | None = None) -> OperationRoundResult:
+         """近距离移动：不停下来对准，直接短按前进。
+ 
+         3px 内不再转向：这么近的距离，目标方向完全由 1px 级的坐标抖动
+@@ -2462,6 +2701,10 @@ class BagelRouteWalker(BagelOperation):
+ 
+         方向真的偏了也不怕：走一步后距离变大，自然回到慢步分支去对准。
+         超时由调用方 _check_small_step_timeout 管，这里只负责迈步。
++
++        Args:
++            press: 本次按压时长；None 用默认短步时长。电子保险箱蠕动时传更短的
++                时长，并额外停一下，挪一小步等画面刷新。
+         """
+         ready = self._prepare_forward_step()
+         if ready is not None:
+@@ -2469,10 +2712,13 @@ class BagelRouteWalker(BagelOperation):
+         limited = self._fail_if_action_limit()
+         if limited is not None:
+             return limited
+-        if not self._step_forward(SMALL_STEP_PRESS):
++        duration = SMALL_STEP_PRESS if press is None else press
++        if not self._step_forward(duration):
+             return self.round_wait('等待前进短按可用', wait=0.02)
+         self._record_input()
+-        return self.round_wait('短步前进')
++        if press is None:
++            return self.round_wait('短步前进')
++        return self.round_wait('小碎步前进', wait=ELECTRONIC_STEP_PAUSE)
+ 
+     def _check_small_step_timeout(self) -> OperationRoundResult | None:
+         """碎步段超时检查：3px 内迈步超过 5 秒还没贴到就跳过这个点（房卡门判失败）。
+@@ -2543,6 +2789,9 @@ class BagelRouteWalker(BagelOperation):
          if stop_turn:
              # 大偏差：松键停车等转向线程转到位，不短按前进。
              self._release_forward()
